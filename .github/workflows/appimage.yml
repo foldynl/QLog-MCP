@@ -1,4 +1,5 @@
 name: AppImage
+run-name: AppImage ${{ github.ref_name }}
 
 on:
   push:
@@ -17,11 +18,16 @@ concurrency:
 
 jobs:
   checks:
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: Determine version
+        id: version
+        run: echo "version=$(python3 versioning.py)" >>"${GITHUB_OUTPUT}"
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.12.10"
@@ -31,6 +37,7 @@ jobs:
       - run: uv run ruff check .
 
   appimage:
+    name: AppImage ${{ needs.checks.outputs.version }} (${{ matrix.architecture }})
     needs: checks
     strategy:
       fail-fast: false
@@ -50,11 +57,11 @@ jobs:
         with:
           version: "0.12.10"
           enable-cache: true
-      - name: Build ${{ matrix.architecture }} AppImage
+      - name: Build AppImage ${{ needs.checks.outputs.version }} (${{ matrix.architecture }})
         run: packaging/appimage/build-appimage.sh
       - uses: actions/upload-artifact@v7
         with:
-          name: qlog-mcp-appimage-${{ matrix.architecture }}
+          name: qlog-mcp-${{ needs.checks.outputs.version }}-${{ matrix.architecture }}
           path: |
             dist/*.AppImage
             dist/*.sha256
@@ -63,7 +70,8 @@ jobs:
 
   release:
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: appimage
+    name: Release ${{ needs.checks.outputs.version }}
+    needs: [checks, appimage]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -73,7 +81,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
-          pattern: qlog-mcp-appimage-*
+          pattern: qlog-mcp-${{ needs.checks.outputs.version }}-*
           path: dist
           merge-multiple: true
       - name: Create release notes

@@ -74,9 +74,10 @@ then start a new Codex session and use `/mcp` to verify that `qlog` is connected
 ## AppImage
 
 Every push to `main` or a `v*` tag builds self-contained `x86_64` and `aarch64`
-AppImages in GitHub Actions. The filename contains the version derived from Git.
-Download the artifact for your architecture, make the AppImage executable, and
-register its absolute path directly with the MCP client:
+AppImages in GitHub Actions. The build job, Actions artifact, and filename all
+contain the version derived from Git. Download the artifact for your
+architecture, make the AppImage executable, and register its absolute path
+directly with the MCP client:
 
 ```bash
 chmod +x qlog-mcp-0.2.3+gabcdef-x86_64.AppImage
