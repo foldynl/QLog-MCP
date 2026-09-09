@@ -3,6 +3,9 @@
 set -euo pipefail
 
 readonly project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+readonly version=$(
+    uv run --quiet --no-project --python 3.12 python "${project_root}/versioning.py"
+)
 
 case "$(uname -m)" in
     x86_64|amd64)
@@ -40,8 +43,12 @@ uv run \
     --project-dir "${project_root}" \
     --package="-r${requirements}"
 
-readonly artifact="${project_root}/dist/qlog-mcp-${architecture}.AppImage"
-APPIMAGE_EXTRACT_AND_RUN=1 "${artifact}" --help >/dev/null
+readonly unversioned_artifact="${project_root}/dist/qlog-mcp-${architecture}.AppImage"
+readonly artifact="${project_root}/dist/qlog-mcp-${version}-${architecture}.AppImage"
+mv "${unversioned_artifact}" "${artifact}"
+
+readonly packaged_version=$(APPIMAGE_EXTRACT_AND_RUN=1 "${artifact}" --version)
+test "${packaged_version}" = "qlog-mcp ${version}"
 
 (
     cd "${project_root}/dist"

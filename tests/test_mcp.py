@@ -40,6 +40,14 @@ def test_cli_starts_server_with_database(monkeypatch, tmp_path) -> None:
     assert started_with == {"database": database, "usage_log": usage_log, "ran": True}
 
 
+def test_cli_prints_package_version(capsys) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["--version"])
+
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out.startswith("qlog-mcp ")
+
+
 async def test_server_registers_public_tool_surface() -> None:
     tools = await create_server().list_tools()
     assert {tool.name for tool in tools} == EXPECTED_TOOLS

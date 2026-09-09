@@ -73,20 +73,37 @@ then start a new Codex session and use `/mcp` to verify that `qlog` is connected
 
 ## AppImage
 
-Every push to `main` builds self-contained `x86_64` and `aarch64` AppImages in
-GitHub Actions. Download the artifact for your architecture, make the AppImage
-executable, and register its absolute path directly with the MCP client:
+Every push to `main` or a `v*` tag builds self-contained `x86_64` and `aarch64`
+AppImages in GitHub Actions. The filename contains the version derived from Git.
+Download the artifact for your architecture, make the AppImage executable, and
+register its absolute path directly with the MCP client:
 
 ```bash
-chmod +x qlog-mcp-x86_64.AppImage
-codex mcp add qlog -- /absolute/path/to/qlog-mcp-x86_64.AppImage \
+chmod +x qlog-mcp-0.2.3+gabcdef-x86_64.AppImage
+codex mcp add qlog -- /absolute/path/to/qlog-mcp-0.2.3+gabcdef-x86_64.AppImage \
   --database /absolute/path/to/qlog.db \
   --usage-log /absolute/path/to/qlog-mcp-usage.jsonl
 ```
 
 The AppImage contains its own Python 3.12 and the dependencies pinned by
-`uv.lock`; no system Python or cloned source tree is needed. Build it locally
-on Linux with `uv`:
+`uv.lock`; no system Python or cloned source tree is needed. Check the embedded
+package version with `qlog-mcp-*.AppImage --version`.
+
+An exact `v0.2.0` tag produces version `0.2.0`. Each following commit advances
+the patch component by one, so the third commit produces `0.2.3+gabcdef`.
+Uncommitted tracked changes add `.dirty`. Before the first version tag, builds
+use `0.1.0+g<commit>` as a bootstrap version.
+
+Pushing a version tag creates a GitHub Release after both AppImages have been
+built. Its notes contain the abbreviated Git log since the previous tag, and
+the release includes both AppImages and their SHA-256 files:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+Build locally on Linux with `uv`:
 
 ```bash
 packaging/appimage/build-appimage.sh

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qlog-mcp"
-version = "0.1.0"
+dynamic = ["version"]
 description = "MCP server for QLog amateur radio logging software"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -27,6 +27,13 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/qlog_mcp"]
 
+[tool.hatch.version]
+source = "code"
+path = "versioning.py"
+
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true, tags = true } }]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
@@ -34,4 +41,3 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-

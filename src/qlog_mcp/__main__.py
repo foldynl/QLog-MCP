@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+from importlib.metadata import version
 from pathlib import Path
 
 from .server import create_server
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Read-only MCP server for QLog")
+    parser = argparse.ArgumentParser(prog="qlog-mcp", description="Read-only MCP server for QLog")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {version('qlog-mcp')}")
     parser.add_argument("--database", type=Path, help="path to the QLog SQLite database")
     parser.add_argument(
         "--usage-log",
