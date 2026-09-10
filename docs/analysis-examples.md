@@ -145,6 +145,28 @@ This is useful for spotting spelling, legacy-directory, or status questions. It 
 declare a QSO invalid. To inspect one key, call `qso.query` with `wwff_ref = <key>` and
 optionally use `one_per_group` to limit evidence.
 
+## Satellite names absent from the stored directory
+
+Filter the QSO population explicitly to satellite propagation, then compare the recorded
+satellite names with QLog's stored satellite directory:
+
+```json
+{
+  "catalog": "satellite",
+  "qso_field": "satellite_name",
+  "scope": {"station_scope": "all"},
+  "qso_filters": {
+    "conditions": [{"field": "propagation_mode", "op": "eq", "value": "SAT"}]
+  },
+  "relation": "qso_only",
+  "sort": [{"field": "qso_count", "direction": "desc"}]
+}
+```
+
+The result can identify a legacy or differently spelled recorded name, or an outdated local
+directory. It does not declare the QSO invalid and does not infer that every QSO carrying a
+satellite name was a satellite QSO; that is why the `propagation_mode` filter is explicit.
+
 ## IOTA group reference versus island ID
 
 The IOTA catalog key is the group reference such as `EU-001`, so it is compatible with

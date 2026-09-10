@@ -348,6 +348,28 @@ def catalog_qlog_database(qlog_database):
         );
         INSERT INTO dxcc_entities_ad1c VALUES
             (291, 'Fallback United States', 'K', 'NA', 5, 8, 37.0, -95.0, 5.0);
+
+        CREATE TABLE sat_info (
+            name TEXT PRIMARY KEY,
+            number INTEGER,
+            uplink TEXT,
+            downlink TEXT,
+            beacon TEXT,
+            mode TEXT,
+            callsign TEXT,
+            status TEXT
+        );
+        INSERT INTO sat_info VALUES
+            ('AO-91', 43017, '435.250', '145.960', '145.960', 'U/V', 'AMSAT', 'active'),
+            ('ISS', 25544, '145.990', '145.800', '145.800', 'V/V', 'RS0ISS', 'active'),
+            ('RS-44', 44909, '435.640', '145.935', '145.935', 'U/V', 'RS44', 'active');
+
+        ALTER TABLE contacts ADD COLUMN sat_name TEXT;
+        ALTER TABLE contacts ADD COLUMN prop_mode TEXT;
+        UPDATE contacts SET sat_name = 'AO-91', prop_mode = 'SAT' WHERE id = 1;
+        UPDATE contacts SET sat_name = 'ao-91', prop_mode = 'SAT' WHERE id = 2;
+        UPDATE contacts SET sat_name = 'SO-50', prop_mode = 'SAT' WHERE id = 3;
+        UPDATE contacts SET sat_name = 'ISS', prop_mode = 'ES' WHERE id = 4;
         """
     )
     connection.commit()
@@ -416,11 +438,14 @@ def reduced_catalog_database(tmp_path):
             start_time TEXT,
             callsign TEXT,
             pota_ref TEXT,
-            dxcc INTEGER
+            dxcc INTEGER,
+            sat_name TEXT
         );
-        INSERT INTO contacts VALUES (1, '2026-01-01T00:00:00Z', 'K1ABC', 'K-0001', 291);
+        INSERT INTO contacts VALUES (1, '2026-01-01T00:00:00Z', 'K1ABC', 'K-0001', 291, 'AO-91');
         CREATE TABLE pota_directory (reference TEXT PRIMARY KEY, name TEXT);
         INSERT INTO pota_directory VALUES ('K-0001', 'Yellowstone');
+        CREATE TABLE sat_info (name TEXT PRIMARY KEY);
+        INSERT INTO sat_info VALUES ('AO-91');
         CREATE TABLE dxcc_entities_ad1c (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,

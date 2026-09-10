@@ -1170,6 +1170,12 @@ class QsoQuery:
     def supported_field_names() -> list[str]:
         return list(QSO_FIELDS)
 
+    async def available_field_names(self, connection: aiosqlite.Connection) -> set[str]:
+        """Return QSO semantic fields available from this database connection."""
+        columns = await self._available_columns(connection)
+        self._require_contacts(columns)
+        return {name for name, field in QSO_FIELDS.items() if field.available(columns)}
+
     async def compile_value_set(
         self,
         connection: aiosqlite.Connection,

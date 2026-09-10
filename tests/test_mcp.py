@@ -144,7 +144,7 @@ async def test_capabilities_tool_through_mcp_client() -> None:
     assert result.data["catalog"] == {
         "query": True,
         "match_qso": True,
-        "names": ["pota", "sota", "wwff", "iota", "dxcc"],
+        "names": ["pota", "sota", "wwff", "iota", "dxcc", "satellite"],
     }
 
 

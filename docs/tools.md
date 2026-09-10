@@ -47,7 +47,7 @@ stale.
 ## Reference catalogs
 
 `qlog.get_schema(domain="catalog")` discovers which of the semantic `pota`, `sota`,
-`wwff`, `iota`, and `dxcc` catalogs are available in the selected database. Each
+`wwff`, `iota`, `dxcc`, and `satellite` catalogs are available in the selected database. Each
 available catalog publishes its fields, types, per-field operators, default projection,
 deterministic default order, page limit, source capability, and QSO fields that can later
 be matched to its references. A missing catalog is omitted; missing optional columns remove
@@ -98,6 +98,7 @@ in the catalog's `compatible_qso_fields`:
 | `wwff` | `wwff_ref`, `my_wwff_ref` |
 | `iota` | `iota`, `my_iota` |
 | `dxcc` | `dxcc`, `my_dxcc` |
+| `satellite` | `satellite_name` |
 
 The relation names describe set membership only:
 
@@ -157,6 +158,12 @@ The initial semantic fields are:
 - IOTA: `reference`, `name`;
 - DXCC: `code`, `name`, `prefix`, `deleted`, `continent`, `cq_zone`, `itu_zone`,
   `latitude`, `longitude`, `valid_from`, `valid_to`.
+- Satellite: `name`, `number`, `uplink`, `downlink`, `beacon`, `mode`, `callsign`, `status`.
+
+The satellite catalog is QLog's stored directory snapshot. Its `name` is the only
+comparison key and can be matched only with QSO `satellite_name`. `number`, frequency-like
+text, mode, callsign, and status are directory facts, not parsed operating parameters or
+evidence that a QSO used a satellite.
 
 ## QSO data
 

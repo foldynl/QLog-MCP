@@ -41,7 +41,7 @@ the rest of that QSO unavailable.
 ## Catalog compatibility
 
 Catalog support is discovered independently from QSO support. The initial semantic
-catalog families are POTA, SOTA, WWFF, IOTA, and DXCC. A catalog is advertised only when
+catalog families are POTA, SOTA, WWFF, IOTA, DXCC, and satellite. A catalog is advertised only when
 its recognizable source is available; missing optional columns remove only the affected
 catalog fields and may change `source_capability` from `full` to `reduced`.
 
@@ -55,11 +55,14 @@ catalog fields and may change `source_capability` from `full` to `reduced`.
 | WWFF | `wwff_ref`, `my_wwff_ref` |
 | IOTA | `iota`, `my_iota` |
 | DXCC | `dxcc`, `my_dxcc` |
+| Satellite | `satellite_name` |
 
 DXCC prefers QLog's complete directory capability, including deletion and validity
 information. If that source is unavailable, the server uses a simpler reduced directory;
 it never merges rows from two sources. Catalog dates are normalized to ISO
 `YYYY-MM-DD`; blank, invalid, and `0000-00-00` sentinel values become `null`.
+The satellite catalog requires only a recognizable satellite-name column; its other directory
+fields are independently optional and disappear from a reduced capability.
 
 ## Error categories and client workflow
 

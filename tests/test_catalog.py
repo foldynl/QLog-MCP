@@ -15,7 +15,7 @@ async def test_catalog_schema_discovers_semantic_capabilities(catalog_qlog_datab
         result = await client.call_tool("qlog.get_schema", {"domain": "catalog"})
 
     schema = result.data["catalog"]
-    assert set(schema["catalogs"]) == {"pota", "sota", "wwff", "iota", "dxcc"}
+    assert set(schema["catalogs"]) == {"pota", "sota", "wwff", "iota", "dxcc", "satellite"}
     assert schema["catalogs"]["dxcc"]["source_capability"] == "full"
     assert "between" in schema["catalogs"]["sota"]["fields"]["valid_from"]["operators"]
     assert schema["catalogs"]["pota"]["compatible_qso_fields"] == ["pota_ref"]
@@ -27,6 +27,13 @@ async def test_catalog_schema_discovers_semantic_capabilities(catalog_qlog_datab
         "type": "integer",
         "description": "Catalog field compared with the selected compatible QSO field.",
     }
+    assert schema["catalogs"]["satellite"]["compatible_qso_fields"] == ["satellite_name"]
+    assert schema["catalogs"]["satellite"]["default_fields"] == [
+        "name", "number", "uplink", "downlink", "mode", "status"
+    ]
+    assert "query metadata or compare" in schema["catalogs"]["satellite"]["description"]
+    assert "satellite_name" in schema["catalogs"]["satellite"]["fields"]["name"]["description"]
+    assert "not a QSO matching key" in schema["catalogs"]["satellite"]["fields"]["mode"]["description"]
     assert "do not assume missing fields" in schema["source_capability_semantics"]["reduced"]
     assert "award credit" in schema["compatible_qso_fields_semantics"]
     assert set(schema["match_qso"]["relations"]) == {
@@ -51,6 +58,7 @@ async def test_catalog_schema_discovers_semantic_capabilities(catalog_qlog_datab
         "summit_code",
         "entityID",
         "dxcc_entities_clublog",
+        "sat_info",
     ):
         assert physical_name not in encoded
 
@@ -175,6 +183,28 @@ async def test_catalog_queries_all_initial_mappings_and_prefers_full_dxcc_source
     ]
 
 
+async def test_satellite_catalog_queries_metadata_and_pages(catalog_qlog_database) -> None:
+    arguments = {
+        "catalog": "satellite",
+        "fields": ["name", "number", "mode", "status"],
+        "sort": [{"field": "number", "direction": "asc"}],
+        "limit": 2,
+    }
+    async with Client(create_server(catalog_qlog_database)) as client:
+        first = await client.call_tool("catalog.query", arguments)
+        arguments["offset"] = first.data["page"]["next_offset"]
+        second = await client.call_tool("catalog.query", arguments)
+
+    assert first.data["items"] == [
+        {"name": "ISS", "number": 25544, "mode": "V/V", "status": "active"},
+        {"name": "AO-91", "number": 43017, "mode": "U/V", "status": "active"},
+    ]
+    assert first.data["page"]["has_more"] is True
+    assert second.data["items"] == [
+        {"name": "RS-44", "number": 44909, "mode": "U/V", "status": "active"}
+    ]
+
+
 async def test_reduced_catalogs_hide_missing_fields_and_use_dxcc_fallback(
     reduced_catalog_database,
 ) -> None:
@@ -193,11 +223,14 @@ async def test_reduced_catalogs_hide_missing_fields_and_use_dxcc_fallback(
         )
 
     catalogs = schema.data["catalog"]["catalogs"]
-    assert set(catalogs) == {"pota", "dxcc"}
+    assert set(catalogs) == {"pota", "dxcc", "satellite"}
     assert set(catalogs["pota"]["fields"]) == {"reference", "name"}
     assert catalogs["pota"]["source_capability"] == "reduced"
     assert catalogs["dxcc"]["source_capability"] == "reduced"
     assert "deleted" not in catalogs["dxcc"]["fields"]
+    assert catalogs["satellite"]["source_capability"] == "reduced"
+    assert set(catalogs["satellite"]["fields"]) == {"name"}
+    assert catalogs["satellite"]["compatible_qso_fields"] == ["satellite_name"]
     assert dxcc.data["items"] == [{"code": 291, "name": "United States"}]
     assert unavailable_field.is_error is True
     assert "Catalog field 'active' is unavailable" in unavailable_field.content[0].text

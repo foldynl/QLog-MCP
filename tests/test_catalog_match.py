@@ -244,6 +244,43 @@ async def test_iota_matches_group_reference_and_rejects_island_id(
     assert "cannot be matched" in invalid.content[0].text
 
 
+async def test_satellite_matches_names_and_reports_qso_only_names(
+    catalog_match_database,
+) -> None:
+    base = {
+        "catalog": "satellite",
+        "qso_field": "satellite_name",
+        "scope": {"station_scope": "all"},
+        "qso_filters": {
+            "conditions": [{"field": "propagation_mode", "op": "eq", "value": "SAT"}]
+        },
+    }
+    async with Client(create_server(catalog_match_database)) as client:
+        matched = await client.call_tool(
+            "catalog.match_qso",
+            {**base, "relation": "matched", "fields": ["name", "number"]},
+        )
+        not_matched = await client.call_tool(
+            "catalog.match_qso",
+            {**base, "relation": "not_matched", "fields": ["name"]},
+        )
+        qso_only = await client.call_tool(
+            "catalog.match_qso",
+            {**base, "relation": "qso_only", "sort": [{"field": "key"}]},
+        )
+        invalid = await client.call_tool(
+            "catalog.match_qso",
+            {**base, "qso_field": "satellite_mode"},
+            raise_on_error=False,
+        )
+
+    assert matched.data["items"] == [{"name": "AO-91", "number": 43017}]
+    assert not_matched.data["items"] == [{"name": "ISS"}, {"name": "RS-44"}]
+    assert qso_only.data["items"] == [{"key": "SO-50", "qso_count": 1}]
+    assert invalid.is_error is True
+    assert "cannot be matched" in invalid.content[0].text
+
+
 async def test_sota_aggregate_can_feed_catalog_enrichment(
     catalog_match_database,
 ) -> None:

@@ -26,9 +26,11 @@ from .filters import (
 from .qso import LogScope, QsoQuery
 from .usage_log import record_sql
 
-CatalogName = Literal["pota", "sota", "wwff", "iota", "dxcc"]
+CatalogName = Literal["pota", "sota", "wwff", "iota", "dxcc", "satellite"]
 CatalogValueType = Literal["string", "integer", "number", "boolean", "date"]
-CATALOG_NAMES: tuple[CatalogName, ...] = ("pota", "sota", "wwff", "iota", "dxcc")
+CATALOG_NAMES: tuple[CatalogName, ...] = (
+    "pota", "sota", "wwff", "iota", "dxcc", "satellite"
+)
 MAX_LIMIT = 1000
 
 
@@ -260,6 +262,23 @@ DXCC_AD1C_FIELDS = {
     ),
 }
 
+SATELLITE_FIELDS = {
+    "name": _field(
+        "name",
+        "string",
+        "Directory satellite name; use it as the comparison key with QSO satellite_name",
+    ),
+    "number": _field("number", "integer", "Satellite number supplied by QLog's directory"),
+    "uplink": _field("uplink", "string", "Uplink information supplied by the directory"),
+    "downlink": _field("downlink", "string", "Downlink information supplied by the directory"),
+    "beacon": _field("beacon", "string", "Beacon information supplied by the directory"),
+    "mode": _field(
+        "mode", "string", "Satellite mode supplied by the directory; it is not a QSO matching key"
+    ),
+    "callsign": _field("callsign", "string", "Satellite callsign supplied by the directory"),
+    "status": _field("status", "string", "Satellite status supplied by the directory"),
+}
+
 CATALOGS: dict[CatalogName, CatalogDefinition] = {
     "pota": CatalogDefinition(
         "Parks on the Air reference directory",
@@ -308,6 +327,13 @@ CATALOGS: dict[CatalogName, CatalogDefinition] = {
         "code",
         ("dxcc", "my_dxcc"),
     ),
+    "satellite": CatalogDefinition(
+        "Satellite directory stored by QLog; query metadata or compare satellite names in a scoped QSO population",
+        (CatalogSource("sat_info", SATELLITE_FIELDS, frozenset({"name"})),),
+        ("name", "number", "uplink", "downlink", "mode", "status"),
+        "name",
+        ("satellite_name",),
+    ),
 }
 
 
@@ -324,14 +350,14 @@ class CatalogQuery:
 
     async def schema(self) -> dict[str, Any]:
         async with self.database.connect() as connection:
-            contacts_columns = await self._table_columns(connection, "contacts")
+            available_qso_fields = await self.qso.available_field_names(connection)
             catalogs: dict[str, Any] = {}
             for name in CATALOG_NAMES:
                 resolved = await self._find_catalog(connection, name)
                 if resolved is None:
                     continue
                 definition = resolved.definition
-                qso_fields = [name for name in definition.qso_fields if name in contacts_columns]
+                qso_fields = [name for name in definition.qso_fields if name in available_qso_fields]
                 catalogs[name] = {
                     "description": definition.description,
                     "source_capability": resolved.capability,
