@@ -15,7 +15,16 @@ async def test_catalog_schema_discovers_semantic_capabilities(catalog_qlog_datab
         result = await client.call_tool("qlog.get_schema", {"domain": "catalog"})
 
     schema = result.data["catalog"]
-    assert set(schema["catalogs"]) == {"pota", "sota", "wwff", "iota", "dxcc", "satellite"}
+    assert set(schema["catalogs"]) == {
+        "pota",
+        "sota",
+        "wwff",
+        "iota",
+        "dxcc",
+        "satellite",
+        "membership",
+        "membership_clubs",
+    }
     assert schema["catalogs"]["dxcc"]["source_capability"] == "full"
     assert "between" in schema["catalogs"]["sota"]["fields"]["valid_from"]["operators"]
     assert schema["catalogs"]["pota"]["compatible_qso_fields"] == ["pota_ref"]
@@ -34,6 +43,18 @@ async def test_catalog_schema_discovers_semantic_capabilities(catalog_qlog_datab
     assert "query metadata or compare" in schema["catalogs"]["satellite"]["description"]
     assert "satellite_name" in schema["catalogs"]["satellite"]["fields"]["name"]["description"]
     assert "not a QSO matching key" in schema["catalogs"]["satellite"]["fields"]["mode"]["description"]
+    assert schema["catalogs"]["membership"]["compatible_qso_fields"] == []
+    assert "not represent all clubs" in schema["catalogs"]["membership"]["description"]
+    assert "confirm a club is available" in schema["catalogs"]["membership_clubs"]["description"]
+    assert schema["catalogs"]["membership"]["fields"]["valid_from_state"]["type"] == "string"
+    assert schema["catalogs"]["membership"]["default_order"] == [
+        {"field": "callsign", "direction": "asc"},
+        {"field": "club", "direction": "asc"},
+        {"field": "member_id", "direction": "asc"},
+        {"field": "valid_from", "direction": "asc"},
+        {"field": "valid_to", "direction": "asc"},
+    ]
+    assert schema["catalogs"]["membership_clubs"]["fields"]["member_count"]["type"] == "integer"
     assert "do not assume missing fields" in schema["source_capability_semantics"]["reduced"]
     assert "award credit" in schema["compatible_qso_fields_semantics"]
     assert set(schema["match_qso"]["relations"]) == {
@@ -59,6 +80,7 @@ async def test_catalog_schema_discovers_semantic_capabilities(catalog_qlog_datab
         "entityID",
         "dxcc_entities_clublog",
         "sat_info",
+        "membership_directory",
     ):
         assert physical_name not in encoded
 
@@ -203,6 +225,185 @@ async def test_satellite_catalog_queries_metadata_and_pages(catalog_qlog_databas
     assert second.data["items"] == [
         {"name": "RS-44", "number": 44909, "mode": "U/V", "status": "active"}
     ]
+
+
+async def test_membership_catalogs_expose_records_and_club_metadata(catalog_qlog_database) -> None:
+    async with Client(create_server(catalog_qlog_database)) as client:
+        members = await client.call_tool(
+            "catalog.query",
+            {
+                "catalog": "membership",
+                "filters": {"conditions": [{"field": "callsign", "op": "eq", "value": "ja2bbb"}]},
+            },
+        )
+        clubs = await client.call_tool(
+            "catalog.query",
+            {
+                "catalog": "membership_clubs",
+                "fields": ["club", "name", "source_updated", "member_count"],
+            },
+        )
+        states = await client.call_tool(
+            "catalog.query",
+            {
+                "catalog": "membership",
+                "filters": {"conditions": [{"field": "club", "op": "eq", "value": "BROKEN"}]},
+                "fields": ["callsign", "valid_from", "valid_from_state", "valid_to_state"],
+            },
+        )
+        unsupported_match = await client.call_tool(
+            "catalog.match_qso",
+            {
+                "catalog": "membership",
+                "qso_field": "callsign",
+                "scope": {"station_scope": "all"},
+            },
+            raise_on_error=False,
+        )
+
+    assert members.data["items"] == [
+        {
+            "club": "FUTURE",
+            "callsign": "JA2BBB",
+            "member_id": "201",
+            "valid_from": "2026-01-16",
+            "valid_to": "2026-12-31",
+        },
+        {
+            "club": "OPEN",
+            "callsign": "JA2BBB",
+            "member_id": "200",
+            "valid_from": None,
+            "valid_to": None,
+        },
+    ]
+    assert clubs.data["items"] == [
+        {"club": "BROKEN", "name": "Broken Date Club", "source_updated": "3", "member_count": 1},
+        {"club": "DAY", "name": "Dated Club", "source_updated": "12", "member_count": 1},
+        {"club": "OPEN", "name": "Open Membership Club", "source_updated": "7", "member_count": 1},
+        {"club": "TIME", "name": "Timed Club", "source_updated": "4", "member_count": 2},
+    ]
+    assert states.data["items"] == [
+        {
+            "callsign": "JA3CCC",
+            "valid_from": None,
+            "valid_from_state": "invalid",
+            "valid_to_state": "open",
+        },
+        {
+            "callsign": "JA5EEE",
+            "valid_from": None,
+            "valid_from_state": "open",
+            "valid_to_state": "invalid",
+        },
+    ]
+    assert unsupported_match.is_error is True
+    assert "does not support catalog.match_qso" in unsupported_match.content[0].text
+    assert "first confirm the club exists in membership_clubs" in unsupported_match.content[0].text
+
+
+async def test_membership_match_qso_uses_recorded_membership_periods(catalog_qlog_database) -> None:
+    async with Client(create_server(catalog_qlog_database)) as client:
+        worked = await client.call_tool(
+            "membership.match_qso",
+            {
+                "club": "time",
+                "scope": {"station_scope": "all"},
+                "member_as_of": "2025-12-31",
+                "relation": "worked",
+            },
+        )
+        not_worked = await client.call_tool(
+            "membership.match_qso",
+            {
+                "club": "TIME",
+                "scope": {"station_scope": "all"},
+                "relation": "not_worked",
+            },
+        )
+        invalid = await client.call_tool(
+            "membership.match_qso",
+            {
+                "club": "BROKEN",
+                "scope": {"station_scope": "all"},
+                "relation": "not_worked",
+            },
+        )
+        snapshot = await client.call_tool(
+            "membership.match_qso",
+            {
+                "club": "BROKEN",
+                "scope": {"station_scope": "all"},
+                "membership_basis": "directory_snapshot",
+                "relation": "worked",
+            },
+        )
+        invalid_snapshot_date = await client.call_tool(
+            "membership.match_qso",
+            {
+                "club": "TIME",
+                "scope": {"station_scope": "all"},
+                "membership_basis": "directory_snapshot",
+                "member_as_of": "2025-12-31",
+            },
+            raise_on_error=False,
+        )
+        unavailable = await client.call_tool(
+            "membership.match_qso",
+            {
+                "club": "NOT-DOWNLOADED",
+                "scope": {"station_scope": "all"},
+            },
+            raise_on_error=False,
+        )
+
+    assert worked.data["summary"] == {
+        "member_callsigns": 2,
+        "worked_callsigns": 1,
+        "not_worked_callsigns": 1,
+        "matching_qsos": 1,
+        "invalid_membership_records": 0,
+        "excluded_invalid_membership_records": 0,
+    }
+    assert worked.data["items"] == [
+        {
+            "callsign": "JA1AAA",
+            "qso_count": 1,
+            "first_qso": "2025-12-31T23:59:00Z",
+            "last_qso": "2025-12-31T23:59:00Z",
+        }
+    ]
+    assert not_worked.data["items"] == [
+        {"callsign": "JA4DDD", "qso_count": 0, "first_qso": None, "last_qso": None}
+    ]
+    assert invalid.data["summary"] == {
+        "member_callsigns": 0,
+        "worked_callsigns": 0,
+        "not_worked_callsigns": 0,
+        "matching_qsos": 0,
+        "invalid_membership_records": 2,
+        "excluded_invalid_membership_records": 2,
+    }
+    assert snapshot.data["summary"] == {
+        "member_callsigns": 2,
+        "worked_callsigns": 1,
+        "not_worked_callsigns": 1,
+        "matching_qsos": 1,
+        "invalid_membership_records": 2,
+        "excluded_invalid_membership_records": 0,
+    }
+    assert snapshot.data["items"] == [
+        {
+            "callsign": "JA3CCC",
+            "qso_count": 1,
+            "first_qso": "2026-02-20T08:00:00Z",
+            "last_qso": "2026-02-20T08:00:00Z",
+        }
+    ]
+    assert invalid_snapshot_date.is_error is True
+    assert "member_as_of is unavailable" in invalid_snapshot_date.content[0].text
+    assert unavailable.is_error is True
+    assert "not downloaded" in unavailable.content[0].text
 
 
 async def test_reduced_catalogs_hide_missing_fields_and_use_dxcc_fallback(

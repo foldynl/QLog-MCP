@@ -12,16 +12,18 @@ This page is the precise tool contract. For the user-oriented view, start with t
 | Learn what this server/database can support | `qlog.get_capabilities`, `qlog.get_schema` | Separates server features from fields available in this database |
 | Inspect one or a small page of actual QSOs | `qso.query` | Returns selected semantic fields with filters, sorting, and pagination |
 | Count or compare many QSOs | `qso.aggregate` | Calculates metrics in SQLite and returns aggregate rows only |
-| Look up a POTA/SOTA/WWFF/IOTA/DXCC directory entry | `catalog.query` | Returns reference facts, not award decisions |
+| Look up a directory entry | `catalog.query` | Returns directory facts, not award decisions |
 | Find catalog entries present or absent in the log | `catalog.match_qso` | Compares distinct semantic keys without returning QSO content |
+| Compare a downloaded club roster with QSOs | `membership.match_qso` | Uses each QSO date |
 
-The seven public tools are:
+The eight public tools are:
 
 - `qlog.get_context`
 - `qlog.get_capabilities`
 - `qlog.get_schema`
 - `catalog.query`
 - `catalog.match_qso`
+- `membership.match_qso`
 - `qso.aggregate`
 - `qso.query`
 
@@ -47,7 +49,8 @@ stale.
 ## Reference catalogs
 
 `qlog.get_schema(domain="catalog")` discovers which of the semantic `pota`, `sota`,
-`wwff`, `iota`, `dxcc`, and `satellite` catalogs are available in the selected database. Each
+`wwff`, `iota`, `dxcc`, `satellite`, `membership`, and `membership_clubs` catalogs are
+available in the selected database. Each
 available catalog publishes its fields, types, per-field operators, default projection,
 deterministic default order, page limit, source capability, and QSO fields that can later
 be matched to its references. A missing catalog is omitted; missing optional columns remove
@@ -99,6 +102,13 @@ in the catalog's `compatible_qso_fields`:
 | `iota` | `iota`, `my_iota` |
 | `dxcc` | `dxcc`, `my_dxcc` |
 | `satellite` | `satellite_name` |
+
+`membership` and `membership_clubs` deliberately have no `catalog.match_qso` mapping.
+They contain only membership lists the user downloaded into QLog, not every club in the world.
+Before analyzing a named club, search `membership_clubs`; if the club is absent, the server has
+no data for it and absence must not be treated as non-membership. Membership needs a QSO date
+and club-specific policy. Use `membership.match_qso` for the time-aware roster complement, the
+QSO membership fields below for QSO evidence, and apply the award rule outside the server.
 
 The relation names describe set membership only:
 
@@ -159,11 +169,39 @@ The initial semantic fields are:
 - DXCC: `code`, `name`, `prefix`, `deleted`, `continent`, `cq_zone`, `itu_zone`,
   `latitude`, `longitude`, `valid_from`, `valid_to`.
 - Satellite: `name`, `number`, `uplink`, `downlink`, `beacon`, `mode`, `callsign`, `status`.
+- Membership: `club`, `callsign`, `member_id`, `valid_from`, `valid_to`,
+  `valid_from_state`, `valid_to_state`.
+- Membership clubs: `club`, `name`, `source_file`, `source_updated`, `member_count`.
 
 The satellite catalog is QLog's stored directory snapshot. Its `name` is the only
 comparison key and can be matched only with QSO `satellite_name`. `number`, frequency-like
 text, mode, callsign, and status are directory facts, not parsed operating parameters or
 evidence that a QSO used a satellite.
+
+The membership catalog contains only member base callsigns from lists downloaded into QLog. Its
+compact `YYYYMMDD` boundaries are returned as ISO dates; blank boundaries are open and malformed
+non-empty values become `null`. `membership_clubs` contains metadata for those downloaded lists.
+If a club is not present there, the server has no membership data for it; this does not mean a
+callsign is not a member. Neither catalog determines a diploma credit or resolves club-specific
+list rules. `valid_*_state` distinguishes blank open boundaries from malformed non-empty data.
+
+## Membership roster/QSO matching
+
+`membership.match_qso` requires an exact club from `membership_clubs` and an explicit QSO
+scope. It returns one row per member base callsign, with QSO count and first/last matching QSO.
+`membership_basis=qso_date` requires the member record to cover the date of each QSO; empty
+dates are open and malformed non-empty dates are excluded. `directory_snapshot` instead compares
+every callsign in QLog's locally stored club roster with any scoped QSO and intentionally ignores
+membership dates. Use `worked` or `not_worked` for either basis.
+
+`member_as_of` optionally limits the roster to records valid on that date. It never replaces the
+per-QSO date test. A missing club list is an error, not an empty roster or evidence of
+non-membership.
+
+The complete `summary` counts the unique roster (`member_callsigns`), its worked and not-worked
+callsigns, and distinct matching QSOs; it is unaffected by pagination. It always reports
+`invalid_membership_records`; `excluded_invalid_membership_records` is nonzero only for
+`qso_date`.
 
 ## QSO data
 
@@ -191,7 +229,7 @@ other station, while `my_dxcc` and `station_callsign` describe the logging side.
 Every advertised QSO field has `cardinality` equal to `one` or `many`. Structured list fields also publish an `item_type` and `list_semantics` describing exact matching and the value returned by explosion. Relevant station fields publish `side` (`contacted`, `logging`, `operator`, or `qso`) and, when the opposite field is
 available, `paired_field`. This lets a client distinguish `pota_ref` from `my_pota_ref`, or `callsign` from `station_callsign`, without knowing QLog's physical column names.
 
-The ADIF list fields currently advertised with `cardinality=many` are:
+The list fields currently advertised with `cardinality=many` are:
 
 - `pota_ref` and `my_pota_ref`: comma-delimited POTA references;
 - `vucc_grids` and `my_vucc_grids`: comma-delimited Maidenhead grids;
@@ -201,9 +239,19 @@ The ADIF list fields currently advertised with `cardinality=many` are:
 - `credit_submitted` and `credit_granted`: comma-delimited ADIF credits with
   optional colon and ampersand-delimited QSL media;
 - `award_submitted` and `award_granted`: comma-delimited sponsored awards.
+- `member_clubs_at_qso_date`: club identifiers for the contacted base callsign from lists the
+  user downloaded into QLog, whose stored membership interval includes the QSO date; an empty
+  start or end is unbounded, while a malformed non-empty boundary excludes that record;
+- `member_clubs_in_directory`: club identifiers for the contacted base callsign from every
+  stored record in the downloaded lists, without testing membership dates or current validity.
 
-These fields keep their stored string representation in query results. Their additional `has`, `has_any`, and `has_all` operators compare complete semantic items case-insensitively. They ignore outer whitespace and whitespace around separators defined by the field's ADIF data type. Empty requested lists are
-invalid, and null, empty, or whitespace-only stored values contain no items. For example, this finds a QSO containing both parks even if the stored list uses different case or includes an optional location on the first reference:
+These fields return a string representation in query results. Membership club values are derived
+and comma-delimited; the other fields retain their stored representation. Their additional `has`,
+`has_any`, and `has_all` operators compare complete semantic items case-insensitively. They ignore
+outer whitespace and whitespace around separators defined by the field's list syntax. Empty
+requested lists are invalid, and null, empty, or whitespace-only stored values contain no items.
+For example, this finds a QSO containing both parks even if the stored list uses different case or
+includes an optional location on the first reference:
 
 ```json
 {

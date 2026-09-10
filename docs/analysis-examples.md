@@ -167,6 +167,46 @@ The result can identify a legacy or differently spelled recorded name, or an out
 directory. It does not declare the QSO invalid and does not infer that every QSO carrying a
 satellite name was a satellite QSO; that is why the `propagation_mode` filter is explicit.
 
+## Club-member QSOs under an explicit rule
+
+For a club whose published rule accepts QLog's stored membership interval, filter the semantic
+membership list and aggregate the QSOs. Empty membership boundaries are already treated as
+unbounded by `member_clubs_at_qso_date`:
+
+```json
+{
+  "scope": {"station_scope": "all"},
+  "filters": {
+    "conditions": [
+      {"field": "member_clubs_at_qso_date", "op": "has", "value": "EXAMPLE-CLUB"}
+    ]
+  },
+  "group_by": ["band", "mode"],
+  "metrics": [{"function": "count", "as": "qsos"}],
+  "order_by": [{"field": "qsos", "direction": "desc"}]
+}
+```
+
+Use `member_clubs_in_directory` only when a question explicitly asks about the current local
+membership snapshot rather than membership on the QSO date. These are evidence fields, not an
+award engine: the assistant still applies each club's rules for dates, confirmations, and credit.
+
+To find downloaded members of a club not worked during their recorded membership periods, use
+the dedicated set operation. It verifies that the club list exists and excludes malformed dates:
+
+```json
+{
+  "club": "EXAMPLE-CLUB",
+  "scope": {"station_scope": "all"},
+  "relation": "not_worked",
+  "sort": [{"field": "callsign", "direction": "asc"}]
+}
+```
+
+For “members in my currently stored list whom I have ever worked”, set
+`"membership_basis": "directory_snapshot"`. This is a local QLog snapshot, not a live club
+directory, and it intentionally ignores membership dates.
+
 ## IOTA group reference versus island ID
 
 The IOTA catalog key is the group reference such as `EU-001`, so it is compatible with

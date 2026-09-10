@@ -241,6 +241,98 @@ async def test_can_group_by_optional_autovalue_field(qlog_database) -> None:
     ]
 
 
+async def test_membership_fields_distinguish_qso_date_from_directory_snapshot(
+    catalog_qlog_database,
+) -> None:
+    async with Client(create_server(catalog_qlog_database)) as client:
+        schema = await client.call_tool("qlog.get_schema", {"domain": "qso"})
+        rows = await client.call_tool(
+            "qso.query",
+            {
+                "scope": {"station_scope": "all"},
+                "fields": [
+                    "id",
+                    "member_clubs_at_qso_date",
+                    "member_clubs_in_directory",
+                ],
+                "sort": [{"field": "id", "direction": "asc"}],
+            },
+        )
+        dated = await client.call_tool(
+            "qso.aggregate",
+            {
+                "scope": {"station_scope": "all"},
+                "group_by": [
+                    {
+                        "field": "member_clubs_at_qso_date",
+                        "explode": True,
+                        "as": "club",
+                    }
+                ],
+                "metrics": [{"function": "count", "as": "qsos"}],
+                "order_by": [{"field": "club", "direction": "asc"}],
+            },
+        )
+        malformed = await client.call_tool(
+            "qso.aggregate",
+            {
+                "scope": {"station_scope": "all"},
+                "filters": {
+                    "conditions": [
+                        {
+                            "field": "member_clubs_at_qso_date",
+                            "op": "has",
+                            "value": "BROKEN",
+                        }
+                    ]
+                },
+                "group_by": [],
+                "metrics": [{"function": "count", "as": "qsos"}],
+            },
+        )
+        directory = await client.call_tool(
+            "qso.aggregate",
+            {
+                "scope": {"station_scope": "all"},
+                "filters": {
+                    "conditions": [
+                        {
+                            "field": "member_clubs_in_directory",
+                            "op": "has",
+                            "value": "BROKEN",
+                        }
+                    ]
+                },
+                "group_by": [],
+                "metrics": [{"function": "count", "as": "qsos"}],
+            },
+        )
+
+    fields = schema.data["qso"]["fields"]
+    assert fields["member_clubs_at_qso_date"]["cardinality"] == "many"
+    assert "empty date bounds are unbounded" in fields["member_clubs_at_qso_date"]["description"]
+    assert "downloaded into QLog" in fields["member_clubs_at_qso_date"]["description"]
+    assert "award eligibility" in fields["member_clubs_at_qso_date"]["description"]
+    assert "current validity" in fields["member_clubs_in_directory"]["description"]
+    assert rows.data["items"] == [
+        {"id": 1, "member_clubs_at_qso_date": "TIME", "member_clubs_in_directory": "TIME"},
+        {"id": 2, "member_clubs_at_qso_date": "OPEN", "member_clubs_in_directory": "FUTURE,OPEN"},
+        {
+            "id": 3,
+            "member_clubs_at_qso_date": "DAY",
+            "member_clubs_in_directory": "AFTER,BROKEN,DAY",
+        },
+        {"id": 4, "member_clubs_at_qso_date": None, "member_clubs_in_directory": None},
+    ]
+    assert dated.data["rows"] == [
+        {"club": "DAY", "qsos": 1},
+        {"club": "OPEN", "qsos": 1},
+        {"club": "TIME", "qsos": 1},
+    ]
+    assert malformed.data["rows"] == [{"qsos": 0}]
+    assert directory.data["rows"] == [{"qsos": 1}]
+
+
 async def test_rejects_aggregate_function_not_supported_by_field(qlog_database) -> None:
     async with Client(create_server(qlog_database)) as client:
         result = await client.call_tool(

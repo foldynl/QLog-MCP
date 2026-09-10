@@ -32,6 +32,7 @@ operators, aggregate functions, cardinality, and any catalog mapping.
 | `grid4`, `my_grid4` | `gridsquare`, `my_gridsquare` | Each derived field disappears independently |
 | Profile scope | `station_profiles(profile_name, callsign, locator)` plus matching station fields | Profile scope is unavailable; callsign scope can still work |
 | `base_callsign`, Wavelog fields | Matching columns in `contacts_autovalue` | Fields are omitted or return `null` when no matching row exists |
+| Membership QSO fields | Base callsign and membership data | Omitted without a base callsign |
 | Frequency-based band fallback | `bands(name, start_freq, end_freq)` | Stored `band` values work; frequency-only QSOs cannot be assigned a band |
 
 Optional-column support is per field. A missing optional column does not disable the
@@ -41,7 +42,8 @@ the rest of that QSO unavailable.
 ## Catalog compatibility
 
 Catalog support is discovered independently from QSO support. The initial semantic
-catalog families are POTA, SOTA, WWFF, IOTA, DXCC, and satellite. A catalog is advertised only when
+catalog families are POTA, SOTA, WWFF, IOTA, DXCC, satellite, membership, and membership
+clubs. A catalog is advertised only when
 its recognizable source is available; missing optional columns remove only the affected
 catalog fields and may change `source_capability` from `full` to `reduced`.
 
@@ -56,6 +58,18 @@ catalog fields and may change `source_capability` from `full` to `reduced`.
 | IOTA | `iota`, `my_iota` |
 | DXCC | `dxcc`, `my_dxcc` |
 | Satellite | `satellite_name` |
+
+Membership catalogs have no `catalog.match_qso` mapping. They expose only lists downloaded into
+QLog, not a global club directory. Their relationship to a QSO is time-aware and uses the
+contacted base callsign, so the server advertises QSO fields only when
+`contacts_autovalue.base_callsign` and the required `membership` columns exist. For
+`member_clubs_at_qso_date`, empty start or end values are unbounded; malformed non-empty dates
+do not match. `member_clubs_in_directory` intentionally ignores the stored dates. A club missing
+from `membership_clubs` is unavailable, not evidence that a callsign is not a member.
+
+`membership.match_qso` additionally requires membership-list metadata, both membership date
+columns, and `contacts_autovalue.base_callsign`. For a selected database missing these inputs it
+returns a compatibility error.
 
 DXCC prefers QLog's complete directory capability, including deletion and validity
 information. If that source is unavailable, the server uses a simpler reduced directory;

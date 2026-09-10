@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import date
 from enum import Enum
 from typing import Any, Literal
 
@@ -22,14 +23,31 @@ from .filters import (
     FilterGroup,
     FilterOperator,
     SortDirection,
+    compact_date_expression,
 )
 from .qso import LogScope, QsoQuery
 from .usage_log import record_sql
 
-CatalogName = Literal["pota", "sota", "wwff", "iota", "dxcc", "satellite"]
+CatalogName = Literal[
+    "pota",
+    "sota",
+    "wwff",
+    "iota",
+    "dxcc",
+    "satellite",
+    "membership",
+    "membership_clubs",
+]
 CatalogValueType = Literal["string", "integer", "number", "boolean", "date"]
 CATALOG_NAMES: tuple[CatalogName, ...] = (
-    "pota", "sota", "wwff", "iota", "dxcc", "satellite"
+    "pota",
+    "sota",
+    "wwff",
+    "iota",
+    "dxcc",
+    "satellite",
+    "membership",
+    "membership_clubs",
 )
 MAX_LIMIT = 1000
 
@@ -83,6 +101,32 @@ class CatalogMatchSort(BaseModel):
     )
 
 
+class MembershipMatchRelation(str, Enum):
+    """Relationship between downloaded club members and scoped QSOs."""
+
+    WORKED = "worked"
+    NOT_WORKED = "not_worked"
+
+
+class MembershipMatchBasis(str, Enum):
+    """How membership rows are related to scoped QSOs."""
+
+    QSO_DATE = "qso_date"
+    DIRECTORY_SNAPSHOT = "directory_snapshot"
+
+
+class MembershipMatchSort(BaseModel):
+    """One returned membership/QSO result field used to order detail rows."""
+
+    field: Literal["callsign", "qso_count", "first_qso", "last_qso"] = Field(
+        description="Returned membership-match field used for ordering."
+    )
+    direction: SortDirection = Field(
+        default=SortDirection.ASC,
+        description="Sort direction for this result field.",
+    )
+
+
 @dataclass(frozen=True)
 class CatalogField:
     column: str
@@ -121,6 +165,7 @@ class CatalogDefinition:
     default_fields: tuple[str, ...]
     key_field: str
     qso_fields: tuple[str, ...]
+    tie_breaker_fields: tuple[str, ...] = ()
 
     @property
     def field_names(self) -> set[str]:
@@ -156,6 +201,21 @@ def _date_field(column: str, description: str) -> CatalogField:
         f"WHEN DATE({normalized}, '+0 days') = {normalized} THEN {normalized} END"
     )
     return CatalogField(column, "date", description, expression)
+
+
+def _compact_date_field(column: str, description: str) -> CatalogField:
+    value = f'TRIM(CAST({{table_alias}}."{column}" AS TEXT))'
+    return CatalogField(column, "date", description, compact_date_expression(value))
+
+
+def _compact_date_state_field(column: str, description: str) -> CatalogField:
+    value = f'TRIM(CAST({{table_alias}}."{column}" AS TEXT))'
+    normalized = compact_date_expression(value)
+    expression = (
+        f"CASE WHEN NULLIF({value}, '') IS NULL THEN 'open' "
+        f"WHEN ({normalized}) IS NULL THEN 'invalid' ELSE 'valid' END"
+    )
+    return CatalogField(column, "string", description, expression)
 
 
 POTA_FIELDS = {
@@ -279,6 +339,52 @@ SATELLITE_FIELDS = {
     "status": _field("status", "string", "Satellite status supplied by the directory"),
 }
 
+MEMBERSHIP_FIELDS = {
+    "club": _field(
+        "clubid", "string", "Club identifier from a membership list downloaded into QLog"
+    ),
+    "callsign": _field(
+        "callsign", "string", "Member base callsign as stored in the downloaded list"
+    ),
+    "member_id": _field("member_id", "string", "Member identifier supplied by that club"),
+    "valid_from": _compact_date_field(
+        "valid_from",
+        "Membership start date normalized from YYYYMMDD; use valid_from_state to distinguish "
+        "an open boundary from malformed stored data",
+    ),
+    "valid_to": _compact_date_field(
+        "valid_to",
+        "Membership end date normalized from YYYYMMDD; use valid_to_state to distinguish an "
+        "open boundary from malformed stored data",
+    ),
+    "valid_from_state": _compact_date_state_field(
+        "valid_from",
+        "Membership start-boundary state: open for blank, valid for a real YYYYMMDD date, "
+        "or invalid for malformed non-empty data",
+    ),
+    "valid_to_state": _compact_date_state_field(
+        "valid_to",
+        "Membership end-boundary state: open for blank, valid for a real YYYYMMDD date, "
+        "or invalid for malformed non-empty data",
+    ),
+}
+
+MEMBERSHIP_CLUB_FIELDS = {
+    "club": _field(
+        "short_desc", "string", "Club identifier used by QLog membership records"
+    ),
+    "name": _field(
+        "long_desc", "string", "Club name supplied by the membership directory"
+    ),
+    "source_file": _field("filename", "string", "Membership-list source filename"),
+    "source_updated": _field(
+        "last_update", "string", "Source update marker supplied by QLog's directory"
+    ),
+    "member_count": _field(
+        "num_records", "integer", "Record count supplied by the membership directory"
+    ),
+}
+
 CATALOGS: dict[CatalogName, CatalogDefinition] = {
     "pota": CatalogDefinition(
         "Parks on the Air reference directory",
@@ -334,6 +440,31 @@ CATALOGS: dict[CatalogName, CatalogDefinition] = {
         "name",
         ("satellite_name",),
     ),
+    "membership": CatalogDefinition(
+        "Club membership records from lists downloaded into QLog; they do not represent all "
+        "clubs and their dates are not award eligibility",
+        (
+            CatalogSource(
+                "membership", MEMBERSHIP_FIELDS, frozenset({"callsign", "clubid"})
+            ),
+        ),
+        ("club", "callsign", "member_id", "valid_from", "valid_to"),
+        "callsign",
+        (),
+        ("club", "member_id", "valid_from", "valid_to"),
+    ),
+    "membership_clubs": CatalogDefinition(
+        "Metadata for membership lists downloaded into QLog; use it to confirm a club is "
+        "available before analyzing it",
+        (
+            CatalogSource(
+                "membership_directory", MEMBERSHIP_CLUB_FIELDS, frozenset({"short_desc"})
+            ),
+        ),
+        ("club", "name", "source_updated", "member_count"),
+        "club",
+        (),
+    ),
 }
 
 
@@ -373,7 +504,8 @@ class CatalogQuery:
                         field for field in definition.default_fields if field in resolved.fields
                     ],
                     "default_order": [
-                        {"field": definition.key_field, "direction": "asc"}
+                        {"field": field, "direction": "asc"}
+                        for field in (definition.key_field, *definition.tie_breaker_fields)
                     ],
                     "max_limit": MAX_LIMIT,
                     "compatible_qso_fields": qso_fields,
@@ -541,6 +673,17 @@ class CatalogQuery:
                 raise IncompatibleDatabaseError(
                     f"Catalog {catalog!r} is unavailable in this QLog database schema"
                 )
+            if not resolved.definition.qso_fields:
+                suggestion = (
+                    "first confirm the club exists in membership_clubs, then use "
+                    "member_clubs_at_qso_date or member_clubs_in_directory with qso.query "
+                    "or qso.aggregate"
+                    if catalog == "membership"
+                    else "use catalog.query"
+                )
+                raise InvalidQueryError(
+                    f"Catalog {catalog!r} does not support catalog.match_qso; {suggestion}"
+                )
             if qso_field not in resolved.definition.qso_fields:
                 compatible = ", ".join(resolved.definition.qso_fields)
                 raise InvalidQueryError(
@@ -668,6 +811,264 @@ class CatalogQuery:
                 "next_offset": offset + limit if has_more else None,
             },
         }
+
+    async def match_membership_qso(
+        self,
+        club: str,
+        scope: LogScope,
+        qso_filters: FilterGroup | None,
+        member_as_of: date | None,
+        membership_basis: MembershipMatchBasis,
+        relation: MembershipMatchRelation,
+        sort: list[MembershipMatchSort] | None,
+        limit: int,
+        offset: int,
+    ) -> dict[str, Any]:
+        """Match one downloaded club roster with QSOs during recorded membership periods."""
+        self._validate_page(limit, offset)
+        relation = MembershipMatchRelation(relation)
+        membership_basis = MembershipMatchBasis(membership_basis)
+        if not club.strip():
+            raise InvalidQueryError("club must not be empty")
+        if member_as_of is not None and membership_basis == MembershipMatchBasis.DIRECTORY_SNAPSHOT:
+            raise InvalidQueryError(
+                "member_as_of is unavailable with directory_snapshot; that basis uses the "
+                "stored local roster without interpreting membership dates"
+            )
+
+        async with self.database.connect() as connection:
+            club_catalog = await self._find_catalog(connection, "membership_clubs")
+            membership_catalog = await self._find_catalog(connection, "membership")
+            if club_catalog is None or membership_catalog is None:
+                raise IncompatibleDatabaseError(
+                    "Membership matching requires downloaded membership lists and their metadata"
+                )
+            club_key = club_catalog.fields["club"].expression()
+            club_rows = await self._execute_sql(
+                connection,
+                f'SELECT {club_key} AS "_club" FROM "{club_catalog.source.table}" AS d '
+                f"WHERE {club_key} COLLATE NOCASE = ? LIMIT 1",
+                [club],
+            )
+            if not club_rows:
+                raise InvalidQueryError(
+                    "Membership list is not downloaded for this club; membership cannot be "
+                    "inferred from its absence"
+                )
+            canonical_club = club_rows[0]["_club"]
+
+            membership_columns = await self._table_columns(connection, "membership")
+            required_membership = {"callsign", "clubid", "valid_from", "valid_to"}
+            if missing := required_membership - membership_columns:
+                raise IncompatibleDatabaseError(
+                    "Membership matching is unavailable; membership is missing: "
+                    + ", ".join(sorted(missing))
+                )
+            columns, source, qso_where, qso_parameters = await self.qso.compile_scoped_source(
+                connection, scope, qso_filters
+            )
+            required_qso = {
+                "contacts_autovalue.contactid",
+                "contacts_autovalue.base_callsign",
+            }
+            if missing := required_qso - columns:
+                raise IncompatibleDatabaseError(
+                    "Membership matching requires QLog base callsigns; contacts_autovalue is "
+                    "missing: "
+                    + ", ".join(sorted(missing))
+                )
+
+            from_value = 'TRIM(CAST(m."valid_from" AS TEXT))'
+            to_value = 'TRIM(CAST(m."valid_to" AS TEXT))'
+            from_date = compact_date_expression(from_value)
+            to_date = compact_date_expression(to_value)
+            member_source = (
+                '"_membership_source" AS ('
+                'SELECT m."callsign" AS "_callsign", '
+                f'{from_date} AS "_from_date", {to_date} AS "_to_date", '
+                f"NULLIF({from_value}, '') IS NULL AS \"_from_open\", "
+                f"NULLIF({to_value}, '') IS NULL AS \"_to_open\" "
+                'FROM membership AS m '
+                'WHERE m."clubid" = ? '
+                'AND NULLIF(TRIM(CAST(m."callsign" AS TEXT)), \'\') IS NOT NULL)'
+            )
+            usable_dates = (
+                '("_from_open" OR "_from_date" IS NOT NULL) '
+                'AND ("_to_open" OR "_to_date" IS NOT NULL)'
+            )
+            request_ctes: list[str] = []
+            parameters: list[Any] = []
+            member_source_sql = member_source
+            member_rows_source = '"_membership_source"'
+            if member_as_of is not None:
+                request_ctes.append('"_request" AS (SELECT ? AS "_as_of")')
+                parameters.append(member_as_of.isoformat())
+                member_rows_source += ' CROSS JOIN "_request" AS r'
+                usable_dates += (
+                    ' AND r."_as_of" >= COALESCE("_from_date", '
+                    'CASE WHEN "_from_open" THEN r."_as_of" END)'
+                    ' AND r."_as_of" <= COALESCE("_to_date", '
+                    'CASE WHEN "_to_open" THEN r."_as_of" END)'
+                )
+            parameters.append(canonical_club)
+            membership_where = (
+                usable_dates if membership_basis == MembershipMatchBasis.QSO_DATE else "1 = 1"
+            )
+            qso_rows = (
+                '"_qso_rows" AS ('
+                'SELECT c."id" AS "_contact_id", DATE(c."start_time") AS "_qso_date", '
+                "strftime('%Y-%m-%dT%H:%M:%SZ', c.\"start_time\") AS \"_datetime\", "
+                'a."base_callsign" AS "_callsign" '
+                f'FROM {source} WHERE ({qso_where}) '
+                'AND NULLIF(TRIM(CAST(a."base_callsign" AS TEXT)), \'\') IS NOT NULL '
+                'AND DATE(c."start_time") IS NOT NULL)'
+            )
+            match_source, match_callsign = (
+                ('"_membership_rows" AS r', 'r."_callsign"')
+                if membership_basis == MembershipMatchBasis.QSO_DATE
+                else ('"_roster" AS r', 'r."callsign"')
+            )
+            matching = (
+                '"_matching_qsos" AS ('
+                f'SELECT DISTINCT {match_callsign} AS "_callsign", '
+                'q."_contact_id", q."_datetime" '
+                f'FROM {match_source} JOIN "_qso_rows" AS q '
+                f'ON q."_callsign" = {match_callsign} '
+                + (
+                    'AND q."_qso_date" >= COALESCE(r."_from_date", '
+                    'CASE WHEN r."_from_open" THEN q."_qso_date" END) '
+                    'AND q."_qso_date" <= COALESCE(r."_to_date", '
+                    'CASE WHEN r."_to_open" THEN q."_qso_date" END)'
+                    if membership_basis == MembershipMatchBasis.QSO_DATE
+                    else ""
+                )
+                + ")"
+            )
+            invalid_rows = (
+                '"_invalid_rows" AS ('
+                'SELECT COUNT(*) AS "_count" FROM membership AS m '
+                'WHERE m."clubid" = ? '
+                f"AND ((NULLIF({from_value}, '') IS NOT NULL AND ({from_date}) IS NULL) "
+                f"OR (NULLIF({to_value}, '') IS NOT NULL AND ({to_date}) IS NULL)))"
+            )
+            relation_source = (
+                '"_worked"'
+                if relation == MembershipMatchRelation.WORKED
+                else '"_roster" AS r LEFT JOIN "_worked" AS w '
+                'ON w."callsign" = r."callsign" WHERE w."callsign" IS NULL'
+            )
+            relation_columns = (
+                '"callsign", "qso_count", "first_qso", "last_qso"'
+                if relation == MembershipMatchRelation.WORKED
+                else 'r."callsign" AS "callsign", 0 AS "qso_count", '
+                'NULL AS "first_qso", NULL AS "last_qso"'
+            )
+            excluded_invalid_sql = (
+                '(SELECT "_count" FROM "_invalid_rows")'
+                if membership_basis == MembershipMatchBasis.QSO_DATE
+                else "0"
+            )
+            order_sql = self._compile_membership_match_sort(sort)
+            ctes = [
+                *request_ctes,
+                member_source_sql,
+                f'"_membership_rows" AS (SELECT * FROM {member_rows_source} WHERE {membership_where})',
+                '"_roster" AS (SELECT DISTINCT "_callsign" AS "callsign" FROM "_membership_rows")',
+                qso_rows,
+                matching,
+                (
+                    '"_worked" AS (SELECT "_callsign" AS "callsign", COUNT(*) AS '
+                    '"qso_count", MIN("_datetime") AS "first_qso", MAX("_datetime") '
+                    'AS "last_qso" FROM "_matching_qsos" GROUP BY "_callsign")'
+                ),
+                invalid_rows,
+                (
+                    '"_summary" AS (SELECT '
+                    '(SELECT COUNT(*) FROM "_roster") AS "member_callsigns", '
+                    '(SELECT COUNT(*) FROM "_worked") AS "worked_callsigns", '
+                    '(SELECT COUNT(*) FROM "_roster") - (SELECT COUNT(*) FROM "_worked") '
+                    'AS "not_worked_callsigns", '
+                    '(SELECT COUNT(*) FROM "_matching_qsos") AS "matching_qsos", '
+                    '(SELECT "_count" FROM "_invalid_rows") AS "invalid_membership_records", '
+                    f'{excluded_invalid_sql} AS '
+                    '"excluded_invalid_membership_records")'
+                ),
+                (
+                    f'"_relation_rows" AS (SELECT 1 AS "_present", {relation_columns} '
+                    f'FROM {relation_source})'
+                ),
+                (
+                    f'"_page" AS (SELECT * FROM "_relation_rows" ORDER BY {order_sql} '
+                    'LIMIT ? OFFSET ?)'
+                ),
+            ]
+            parameters.extend(qso_parameters)
+            parameters.append(canonical_club)
+            parameters.extend((limit + 1, offset))
+            sql = (
+                "WITH "
+                + ", ".join(ctes)
+                + ' SELECT s.*, p."_present", p."callsign", p."qso_count", '
+                'p."first_qso", p."last_qso" FROM "_summary" AS s '
+                'LEFT JOIN "_page" AS p ON 1 = 1 '
+                f"ORDER BY {order_sql}"
+            )
+            rows = await self._execute_sql(connection, sql, parameters)
+
+        detail_rows = [row for row in rows if row["_present"] is not None]
+        has_more = len(detail_rows) > limit
+        summary = rows[0]
+        return {
+            "club": club,
+            "membership_basis": membership_basis.value,
+            "member_as_of": member_as_of.isoformat() if member_as_of else None,
+            "relation": relation.value,
+            "summary": {
+                "member_callsigns": summary["member_callsigns"],
+                "worked_callsigns": summary["worked_callsigns"],
+                "not_worked_callsigns": summary["not_worked_callsigns"],
+                "matching_qsos": summary["matching_qsos"],
+                "invalid_membership_records": summary["invalid_membership_records"],
+                "excluded_invalid_membership_records": summary[
+                    "excluded_invalid_membership_records"
+                ],
+            },
+            "items": [
+                {
+                    "callsign": row["callsign"],
+                    "qso_count": row["qso_count"],
+                    "first_qso": row["first_qso"],
+                    "last_qso": row["last_qso"],
+                }
+                for row in detail_rows[:limit]
+            ],
+            "effective_scope": scope.model_dump(
+                mode="json", exclude_defaults=True, exclude_none=True
+            ),
+            "page": {
+                "limit": limit,
+                "offset": offset,
+                "returned": min(len(detail_rows), limit),
+                "has_more": has_more,
+                "next_offset": offset + limit if has_more else None,
+            },
+        }
+
+    @staticmethod
+    def _compile_membership_match_sort(
+        sort: list[MembershipMatchSort] | None,
+    ) -> str:
+        requested = sort or [MembershipMatchSort(field="callsign")]
+        parts: list[str] = []
+        fields: set[str] = set()
+        for item in requested:
+            if item.field in fields:
+                continue
+            parts.append(f'"{item.field}" {item.direction.value.upper()}')
+            fields.add(item.field)
+        if "callsign" not in fields:
+            parts.append('"callsign" ASC')
+        return ", ".join(parts)
 
     @staticmethod
     def _resolve_match_fields(
@@ -902,9 +1303,12 @@ class CatalogQuery:
             field = CatalogQuery._require_field(resolved, item.field, "sort field")
             parts.append(f"{field.expression()} {item.direction.value.upper()}")
             sorted_fields.add(item.field)
-        default_order = resolved.definition.key_field
-        if default_order not in sorted_fields:
-            parts.append(f"{resolved.fields[default_order].expression()} ASC")
+        for field_name in (
+            resolved.definition.key_field,
+            *resolved.definition.tie_breaker_fields,
+        ):
+            if field_name not in sorted_fields:
+                parts.append(f"{resolved.fields[field_name].expression()} ASC")
         return ", ".join(parts)
 
     @staticmethod

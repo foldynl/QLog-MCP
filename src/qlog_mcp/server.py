@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -14,6 +15,9 @@ from .catalog import (
     CatalogQuery,
     CatalogSort,
     MatchRelation,
+    MembershipMatchBasis,
+    MembershipMatchRelation,
+    MembershipMatchSort,
 )
 from .database import Database
 from .discovery import discover_database
@@ -66,7 +70,14 @@ def create_server(
             "available. When a catalog has contacted- and logging-station mappings, use "
             "the QSO schema's side and paired_field metadata to choose the intended one. Use "
             "catalog.match_qso for present/absent set comparisons. Catalog data supplies facts "
-            "for analysis; apply award or contest rules outside this server."
+            "for analysis; apply award or contest rules outside this server. Membership data "
+            "covers only club lists the user downloaded into QLog, not all clubs. Before "
+            "analyzing a named club, verify it in membership_clubs; if absent, do not infer "
+            "non-membership or use membership fields for that club. Membership catalogs do not "
+            "support catalog.match_qso. Use membership.match_qso for worked or not-worked "
+            "roster callsigns during recorded membership, member_clubs_at_qso_date only when "
+            "the external rule uses the stored membership interval, and "
+            "member_clubs_in_directory only for the local snapshot."
         ),
     )
     if usage_log_path is not None:
@@ -100,7 +111,9 @@ def create_server(
         Field(
             description=(
                 "Object containing server, stage, database_configured, QSO support flags and "
-                "semantic field names, plus supported catalog operations and names."
+                "semantic field names, supported catalog operations and names, and membership "
+                "roster matching. Membership data remains limited to lists downloaded into QLog; "
+                "use qlog.get_schema to verify database fields and catalogs."
             )
         ),
     ]:
@@ -118,6 +131,7 @@ def create_server(
                 "match_qso": True,
                 "names": catalogs.supported_catalog_names(),
             },
+            "membership": {"match_qso": True},
         }
 
     @server.tool(
@@ -341,6 +355,99 @@ def create_server(
             catalog_filters,
             relation,
             fields,
+            sort,
+            limit,
+            offset,
+        )
+
+    @server.tool(
+        name="membership.match_qso",
+        description=(
+            "Compare one club list downloaded into QLog, not a global club directory, with a "
+            "scoped QSO population. A QSO matches only when the contacted base callsign is "
+            "covered by the stored membership interval on that QSO date. This is evidence, not "
+            "award-credit determination."
+        ),
+    )
+    async def membership_match_qso(
+        club: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description=(
+                    "Club identifier from membership_clubs. The tool rejects a club whose list "
+                    "is not downloaded into QLog rather than inferring non-membership."
+                ),
+            ),
+        ],
+        scope: Annotated[
+            LogScope,
+            Field(description="Required station selection and optional QSO date/operator limits."),
+        ],
+        qso_filters: Annotated[
+            FilterGroup | None,
+            Field(description="Optional semantic filters defining the QSO population."),
+        ] = None,
+        member_as_of: Annotated[
+            date | None,
+            Field(
+                description=(
+                    "Optional date selecting roster records valid on that day. It does not "
+                    "replace the per-QSO membership-date test, and malformed non-empty date "
+                    "boundaries remain excluded."
+                )
+            ),
+        ] = None,
+        membership_basis: Annotated[
+            MembershipMatchBasis,
+            Field(
+                description=(
+                    "qso_date requires membership on each QSO date; directory_snapshot matches "
+                    "any QSO against the locally stored roster and intentionally ignores dates."
+                )
+            ),
+        ] = MembershipMatchBasis.QSO_DATE,
+        relation: Annotated[
+            MembershipMatchRelation,
+            Field(
+                description=(
+                    "Return roster callsigns with at least one matching QSO, or roster callsigns "
+                    "with none, under membership_basis."
+                )
+            ),
+        ] = MembershipMatchRelation.WORKED,
+        sort: Annotated[
+            list[MembershipMatchSort] | None,
+            Field(description="Optional ordering of returned callsign summaries."),
+        ] = None,
+        limit: Annotated[
+            int,
+            Field(ge=1, le=1000, description="Maximum detail rows to return, from 1 to 1000."),
+        ] = 100,
+        offset: Annotated[
+            int,
+            Field(description="Zero-based detail offset; use page.next_offset for the next page."),
+        ] = 0,
+    ) -> Annotated[
+        dict[str, Any],
+        Field(
+            description=(
+                "Object with complete member/QSO summary, paginated callsign rows, and the "
+                "effective QSO scope. summary.member_callsigns is the unique roster; "
+                "worked_callsigns and not_worked_callsigns cover that complete roster, not just "
+                "this page; matching_qsos counts distinct QSO rows; invalid_membership_records "
+                "counts malformed dates; and excluded_invalid_membership_records is nonzero only "
+                "when qso_date excludes them."
+            )
+        ),
+    ]:
+        return await catalogs.match_membership_qso(
+            club,
+            scope,
+            qso_filters,
+            member_as_of,
+            membership_basis,
+            relation,
             sort,
             limit,
             offset,

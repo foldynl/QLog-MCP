@@ -63,6 +63,20 @@ FILTER_OPERATOR_DESCRIPTIONS = {
 }
 
 
+def compact_date_expression(value: str) -> str:
+    """Normalize an internal YYYYMMDD SQL expression only when it is a real calendar date."""
+    normalized = (
+        f"SUBSTR({value}, 1, 4) || '-' || SUBSTR({value}, 5, 2) || '-' || "
+        f"SUBSTR({value}, 7, 2)"
+    )
+    digits = "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]"
+    return (
+        f"CASE WHEN NULLIF({value}, '') IS NULL THEN NULL "
+        f"WHEN LENGTH({value}) = 8 AND {value} GLOB '{digits}' "
+        f"AND DATE({normalized}, '+0 days') = {normalized} THEN {normalized} END"
+    )
+
+
 COMPARISON_OPERATORS = (
     FilterOperator.EQ,
     FilterOperator.NEQ,

@@ -27,6 +27,7 @@ from .filters import (
     FilterOperator,
     Scalar,
     SortDirection,
+    compact_date_expression,
 )
 from .usage_log import record_sql
 
@@ -669,6 +670,62 @@ def _autovalue_field(
     )
 
 
+def _membership_clubs_field(time_aware: bool) -> QsoField:
+    """Define a list of membership clubs for the contacted base callsign."""
+    clauses = [
+        'm."callsign" COLLATE NOCASE = a."base_callsign"',
+        'NULLIF(TRIM(CAST(m."clubid" AS TEXT)), \'\') IS NOT NULL',
+    ]
+    required_columns = (
+        "contacts_autovalue.contactid",
+        "contacts_autovalue.base_callsign",
+        "membership.callsign",
+        "membership.clubid",
+    )
+    if time_aware:
+        qso_date = 'DATE(c."start_time")'
+        valid_from = 'TRIM(CAST(m."valid_from" AS TEXT))'
+        valid_to = 'TRIM(CAST(m."valid_to" AS TEXT))'
+        valid_from_date = compact_date_expression(valid_from)
+        valid_to_date = compact_date_expression(valid_to)
+        clauses.extend(
+            (
+                f"{qso_date} IS NOT NULL",
+                (
+                    f"{qso_date} >= COALESCE({valid_from_date}, "
+                    f"CASE WHEN NULLIF({valid_from}, '') IS NULL THEN {qso_date} END)"
+                ),
+                (
+                    f"{qso_date} <= COALESCE({valid_to_date}, "
+                    f"CASE WHEN NULLIF({valid_to}, '') IS NULL THEN {qso_date} END)"
+                ),
+            )
+        )
+        required_columns += ("membership.valid_from", "membership.valid_to")
+
+    return _field(
+        "membership.clubid",
+        "string",
+        (
+            "Club identifiers from membership lists the user downloaded into QLog, whose "
+            "stored records cover the QSO date; empty date bounds are unbounded, malformed "
+            "non-empty dates do not match, and a record match is not award eligibility"
+            if time_aware
+            else "Club identifiers from membership lists the user downloaded into QLog; all "
+            "stored records are included without testing membership dates, so this is not "
+            "current validity or award eligibility"
+        ),
+        sql_expression=(
+            "(SELECT GROUP_CONCAT(\"_club\", ',') FROM ("
+            "SELECT DISTINCT UPPER(TRIM(CAST(m.\"clubid\" AS TEXT))) AS \"_club\" "
+            "FROM membership AS m WHERE "
+            + " AND ".join(f"({clause})" for clause in clauses)
+            + " ORDER BY \"_club\"))"
+        ),
+        required_columns=required_columns,
+    )
+
+
 def _numeric_rst_field(column: str, description: str) -> QsoField:
     """Expose an ADIF RST value only when its complete text is an integer."""
     value = f'TRIM(CAST({{table_alias}}."{column}" AS TEXT))'
@@ -965,6 +1022,8 @@ QSO_FIELDS: dict[str, QsoField] = {
         "date",
         "Date on which the QSO was last uploaded to Wavelog",
     ),
+    "member_clubs_at_qso_date": _membership_clubs_field(time_aware=True),
+    "member_clubs_in_directory": _membership_clubs_field(time_aware=False),
     "extra_fields": _field("fields", "object", "Additional ADIF fields stored as JSON"),
 }
 
@@ -1020,6 +1079,14 @@ _AWARD_LIST = _ListSyntax(
     "Matches one complete sponsored-award item.",
     "Returns each complete sponsored-award item.",
 )
+_MEMBERSHIP_LIST = _ListSyntax(
+    "membership_club",
+    ",",
+    _parse_exact_list_item,
+    _normalize_list_text,
+    "Matches one complete QLog membership club identifier case-insensitively.",
+    "Returns each distinct matching membership club identifier.",
+)
 
 # Add a field here only when one stored ADIF value contains multiple semantic items.
 # The assigned syntax owns its delimiter, matching, and exploded value. A structured
@@ -1037,6 +1104,8 @@ _LIST_SYNTAXES = {
     "credit_granted": _CREDIT_LIST,
     "award_submitted": _AWARD_LIST,
     "award_granted": _AWARD_LIST,
+    "member_clubs_at_qso_date": _MEMBERSHIP_LIST,
+    "member_clubs_in_directory": _MEMBERSHIP_LIST,
 }
 
 # Add a pair only when both fields describe the same fact from opposite sides of the
@@ -1184,9 +1253,9 @@ class QsoQuery:
         field_name: str,
     ) -> tuple[list[str], list[Any]]:
         """Compile CTEs containing distinct QSO field values and their QSO counts."""
-        await self._register_sql_functions(connection)
-        columns = await self._available_columns(connection)
-        self._require_contacts(columns)
+        columns, source, where_sql, parameters = await self.compile_scoped_source(
+            connection, scope, filters
+        )
         field = QSO_FIELDS.get(field_name)
         if field is None:
             raise InvalidQueryError(f"Unknown QSO field: {field_name}")
@@ -1195,13 +1264,7 @@ class QsoQuery:
                 f"QSO field {field_name!r} is unavailable in this QLog database schema"
             )
 
-        parameters: list[Any] = []
-        where_parts = await self._compile_scope(connection, scope, parameters, columns)
-        if filters is not None:
-            where_parts.append(self._compile_group(filters, parameters, columns))
-        where_sql = " AND ".join(f"({part})" for part in where_parts) or "1 = 1"
         value = self._query_field(field_name, columns).base_expression()
-        source = f"contacts AS c{self._autovalue_join(columns)}"
 
         if field.cardinality == "many":
             ctes = [
@@ -1251,6 +1314,23 @@ class QsoQuery:
                 f'GROUP BY "_key"{collation})'
             ),
         ], parameters
+
+    async def compile_scoped_source(
+        self,
+        connection: aiosqlite.Connection,
+        scope: LogScope,
+        filters: FilterGroup | None,
+    ) -> tuple[set[str], str, str, list[Any]]:
+        """Compile the validated QSO source shared by semantic set operations."""
+        await self._register_sql_functions(connection)
+        columns = await self._available_columns(connection)
+        self._require_contacts(columns)
+        parameters: list[Any] = []
+        where_parts = await self._compile_scope(connection, scope, parameters, columns)
+        if filters is not None:
+            where_parts.append(self._compile_group(filters, parameters, columns))
+        where_sql = " AND ".join(f"({part})" for part in where_parts) or "1 = 1"
+        return columns, f"contacts AS c{self._autovalue_join(columns)}", where_sql, parameters
 
     async def schema(self) -> dict[str, Any]:
         async with self.database.connect() as connection:
@@ -1805,6 +1885,8 @@ class QsoQuery:
         columns.update(f"contacts_autovalue.{column}" for column in autovalue_columns)
         band_columns = await QsoQuery._table_columns(connection, "bands")
         columns.update(f"bands.{column}" for column in band_columns)
+        membership_columns = await QsoQuery._table_columns(connection, "membership")
+        columns.update(f"membership.{column}" for column in membership_columns)
         return columns
 
     @staticmethod

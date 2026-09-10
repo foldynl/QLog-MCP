@@ -11,6 +11,7 @@ from qlog_mcp.server import create_server
 EXPECTED_TOOLS = {
     "catalog.match_qso",
     "catalog.query",
+    "membership.match_qso",
     "qlog.get_context",
     "qlog.get_capabilities",
     "qlog.get_schema",
@@ -60,6 +61,7 @@ async def test_public_tool_schemas_are_described() -> None:
     aggregate = tools["qso.aggregate"]
     catalog = tools["catalog.query"]
     catalog_match = tools["catalog.match_qso"]
+    membership_match = tools["membership.match_qso"]
 
     assert all(tool.description for tool in tools.values())
     assert all(tool.output_schema.get("description") for tool in tools.values())
@@ -88,6 +90,12 @@ async def test_public_tool_schemas_are_described() -> None:
     assert tools["qlog.get_schema"].parameters["properties"]["domain"]["description"]
     assert "once per needed domain" in tools["qlog.get_schema"].description
     assert "Do not call it before every operation" in server.instructions
+    assert "covers only club lists the user downloaded into QLog" in server.instructions
+    assert "if absent, do not infer non-membership" in server.instructions
+    assert (
+        "Use membership.match_qso for worked or not-worked roster callsigns"
+        in server.instructions
+    )
     assert set(tools["qlog.get_schema"].parameters["properties"]["domain"]["enum"]) == {
         "qso",
         "catalog",
@@ -113,6 +121,13 @@ async def test_public_tool_schemas_are_described() -> None:
     assert "side and paired_field" in catalog_match.parameters["properties"][
         "qso_field"
     ]["description"]
+    assert "not downloaded" in membership_match.parameters["properties"]["club"]["description"]
+    assert "global club directory" in membership_match.description
+    assert "distinct QSO rows" in membership_match.output_schema["description"]
+    assert set(membership_match.parameters["$defs"]["MembershipMatchRelation"]["enum"]) == {
+        "worked",
+        "not_worked",
+    }
     assert all(
         parameter.get("description")
         for parameter in aggregate.parameters["properties"].values()
@@ -144,8 +159,18 @@ async def test_capabilities_tool_through_mcp_client() -> None:
     assert result.data["catalog"] == {
         "query": True,
         "match_qso": True,
-        "names": ["pota", "sota", "wwff", "iota", "dxcc", "satellite"],
+        "names": [
+            "pota",
+            "sota",
+            "wwff",
+            "iota",
+            "dxcc",
+            "satellite",
+            "membership",
+            "membership_clubs",
+        ],
     }
+    assert result.data["membership"] == {"match_qso": True}
 
 
 async def test_qlog_context_and_qso_schema(qlog_database) -> None:
@@ -737,6 +762,8 @@ async def test_qso_query_adapts_default_projection_to_available_columns(tmp_path
 
     assert context.data["station_callsigns"] == []
     assert "base_callsign" not in schema.data["qso"]["fields"]
+    assert "member_clubs_at_qso_date" not in schema.data["qso"]["fields"]
+    assert "member_clubs_in_directory" not in schema.data["qso"]["fields"]
     assert schema.data["qso"]["fields"]["callsign"]["side"] == "contacted"
     assert "paired_field" not in schema.data["qso"]["fields"]["callsign"]
     assert "grid4" not in schema.data["qso"]["fields"]

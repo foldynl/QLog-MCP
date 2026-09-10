@@ -370,6 +370,36 @@ def catalog_qlog_database(qlog_database):
         UPDATE contacts SET sat_name = 'ao-91', prop_mode = 'SAT' WHERE id = 2;
         UPDATE contacts SET sat_name = 'SO-50', prop_mode = 'SAT' WHERE id = 3;
         UPDATE contacts SET sat_name = 'ISS', prop_mode = 'ES' WHERE id = 4;
+
+        CREATE TABLE membership_directory (
+            short_desc TEXT PRIMARY KEY,
+            long_desc TEXT,
+            filename TEXT,
+            last_update TEXT,
+            num_records INTEGER
+        );
+        INSERT INTO membership_directory VALUES
+            ('BROKEN', 'Broken Date Club', 'broken.csv', '3', 1),
+            ('DAY', 'Dated Club', 'day.csv', '12', 1),
+            ('OPEN', 'Open Membership Club', 'open.csv', '7', 1),
+            ('TIME', 'Timed Club', 'time.csv', '4', 2);
+
+        CREATE TABLE membership (
+            callsign TEXT,
+            member_id TEXT,
+            valid_from TEXT,
+            valid_to TEXT,
+            clubid TEXT
+        );
+        INSERT INTO membership VALUES
+            ('JA1AAA', '100', '20250101', '20251231', 'TIME'),
+            ('JA4DDD', '101', '20250101', '20251231', 'TIME'),
+            ('JA2BBB', '200', '', '', 'OPEN'),
+            ('JA2BBB', '201', '20260116', '20261231', 'FUTURE'),
+            ('JA3CCC', '300', '20260230', '', 'BROKEN'),
+            ('JA5EEE', '303', '', '20260230', 'BROKEN'),
+            ('JA3CCC', '301', '20260101', '20260220', 'DAY'),
+            ('JA3CCC', '302', '20260221', '', 'AFTER');
         """
     )
     connection.commit()
