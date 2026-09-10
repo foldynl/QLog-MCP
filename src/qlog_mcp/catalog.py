@@ -693,17 +693,12 @@ class CatalogQuery:
 
             selected_names = self._resolve_match_fields(resolved, relation, fields)
             order_sql, sort_names = self._compile_match_sort(resolved, relation, sort)
-            catalog_names = list(
-                dict.fromkeys(
-                    [
-                        *(selected_names if relation != MatchRelation.QSO_ONLY else []),
-                        *sort_names,
-                        resolved.definition.key_field,
-                    ]
-                )
+            key_name = resolved.definition.key_field
+            catalog_names = (
+                [key_name]
+                if relation == MatchRelation.QSO_ONLY
+                else list(dict.fromkeys([*sort_names, key_name]))
             )
-            if relation == MatchRelation.QSO_ONLY:
-                catalog_names = [resolved.definition.key_field]
 
             qso_ctes, parameters = await self.qso.compile_value_set(
                 connection, scope, qso_filters, qso_field
@@ -716,7 +711,6 @@ class CatalogQuery:
             )
             parameters.extend(catalog_parameters)
 
-            key_name = resolved.definition.key_field
             key_field = resolved.fields[key_name]
             key_expression = key_field.expression()
             if key_field.value_type == "string":
@@ -749,26 +743,51 @@ class CatalogQuery:
                     f'FROM "_catalog_rows" GROUP BY "_key"{key_collation})'
                 ),
                 (
+                    '"_matched_values" AS (SELECT c."_key" '
+                    'FROM "_catalog_values" AS c JOIN "_qso_values" AS q '
+                    f'ON {join_sql})'
+                ),
+                (
                     '"_summary" AS ('
                     'SELECT (SELECT COUNT(*) FROM "_catalog_values") AS "catalog_values", '
-                    f'(SELECT COUNT(*) FROM "_catalog_values" AS c JOIN "_qso_values" AS q ON {join_sql}) '
-                    'AS "matched_values", '
-                    f'(SELECT COUNT(*) FROM "_catalog_values" AS c LEFT JOIN "_qso_values" AS q ON {join_sql} '
-                    'WHERE q."_key" IS NULL) AS "not_matched_values", '
-                    f'(SELECT COUNT(*) FROM "_qso_values" AS q LEFT JOIN "_catalog_values" AS c ON {join_sql} '
-                    'WHERE c."_key" IS NULL) AS "qso_only_values")'
+                    '(SELECT COUNT(*) FROM "_matched_values") AS "matched_values", '
+                    '(SELECT COUNT(*) FROM "_catalog_values") - '
+                    '(SELECT COUNT(*) FROM "_matched_values") AS "not_matched_values", '
+                    '(SELECT COUNT(*) FROM "_qso_values") - '
+                    '(SELECT COUNT(*) FROM "_matched_values") AS "qso_only_values")'
                 ),
-                self._match_rows_cte(
-                    relation,
-                    selected_names if relation == MatchRelation.QSO_ONLY else catalog_names,
-                    join_sql,
-                ),
+                self._match_rows_cte(relation, catalog_names, join_sql),
                 (
                     f'"_page" AS (SELECT * FROM "_relation_rows" ORDER BY {order_sql} '
                     'LIMIT ? OFFSET ?)'
                 ),
             ]
             parameters.extend((limit + 1, offset))
+            item_source = '"_page"'
+            needs_item_details = any(name not in catalog_names for name in selected_names)
+            if relation != MatchRelation.QSO_ONLY and needs_item_details:
+                item_names = list(dict.fromkeys([*selected_names, *sort_names, key_name]))
+                item_values = ", ".join(
+                    (
+                        f'MIN(p."{name}") AS "{name}"'
+                        if name in catalog_names
+                        else f'MIN({resolved.fields[name].expression()}) AS "{name}"'
+                    )
+                    for name in item_names
+                )
+                item_join_sql = (
+                    f'p."_key" COLLATE NOCASE = {key_expression} COLLATE NOCASE'
+                    if key_field.value_type == "string"
+                    else f'p."_key" = {key_expression}'
+                )
+                ctes.append(
+                    '"_items" AS (SELECT 1 AS "_present", '
+                    f'{item_values} FROM "_page" AS p '
+                    f'JOIN "{resolved.source.table}" AS d ON {item_join_sql} '
+                    f'WHERE ({catalog_where}) GROUP BY p."_key"{key_collation})'
+                )
+                parameters.extend(catalog_parameters)
+                item_source = '"_items"'
             item_columns = ", ".join(
                 f'p."{name}" AS "_item_{name}"' for name in selected_names
             )
@@ -778,7 +797,7 @@ class CatalogQuery:
                 + ' SELECT s."catalog_values", s."matched_values", '
                 + 's."not_matched_values", s."qso_only_values", '
                 + f'p."_present" AS "_item_present", {item_columns} '
-                + 'FROM "_summary" AS s LEFT JOIN "_page" AS p ON 1 = 1 '
+                + f'FROM "_summary" AS s LEFT JOIN {item_source} AS p ON 1 = 1 '
                 + f"ORDER BY {order_sql}"
             )
             rows = await self._execute_sql(connection, sql, parameters)
@@ -1121,18 +1140,19 @@ class CatalogQuery:
             return (
                 '"_relation_rows" AS (SELECT 1 AS "_present", q."_key" AS "key", '
                 'q."_qso_count" AS "qso_count" FROM "_qso_values" AS q '
-                f'LEFT JOIN "_catalog_values" AS c ON {join_sql} WHERE c."_key" IS NULL)'
+                f'LEFT JOIN "_matched_values" AS c ON {join_sql} WHERE c."_key" IS NULL)'
             )
         columns = ", ".join(f'c."{name}" AS "{name}"' for name in selected_names)
         if relation == MatchRelation.MATCHED:
-            source = f'JOIN "_qso_values" AS q ON {join_sql}'
-            condition = ""
-        else:
-            source = f'LEFT JOIN "_qso_values" AS q ON {join_sql}'
-            condition = ' WHERE q."_key" IS NULL'
+            return (
+                f'"_relation_rows" AS (SELECT 1 AS "_present", c."_key", {columns} '
+                'FROM "_matched_values" AS q JOIN "_catalog_values" AS c '
+                f'ON {join_sql})'
+            )
         return (
-            f'"_relation_rows" AS (SELECT 1 AS "_present", {columns} '
-            f'FROM "_catalog_values" AS c {source}{condition})'
+            f'"_relation_rows" AS (SELECT 1 AS "_present", c."_key", {columns} '
+            'FROM "_catalog_values" AS c LEFT JOIN "_matched_values" AS q '
+            f'ON {join_sql} WHERE q."_key" IS NULL)'
         )
 
     @staticmethod

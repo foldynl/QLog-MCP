@@ -65,7 +65,8 @@ async def test_all_relations_and_complete_paginated_summary(
         "qso_filters": {
             "conditions": [{"field": "callsign", "op": "eq", "value": "NO0CALL"}]
         },
-        "fields": ["reference", "name"],
+        "fields": ["reference"],
+        "sort": [{"field": "name", "direction": "asc"}],
         "limit": 1,
     }
     async with Client(create_server(catalog_match_database)) as client:
@@ -85,7 +86,12 @@ async def test_all_relations_and_complete_paginated_summary(
         )
         qso_only = await client.call_tool(
             "catalog.match_qso",
-            {**base, "relation": "qso_only", "fields": ["key", "qso_count"]},
+            {
+                **base,
+                "relation": "qso_only",
+                "fields": ["key", "qso_count"],
+                "sort": [{"field": "key"}],
+            },
         )
 
     expected_summary = {
@@ -96,9 +102,9 @@ async def test_all_relations_and_complete_paginated_summary(
     }
     assert matched.data["items"] == []
     assert first.data["summary"] == second.data["summary"] == expected_summary
-    assert first.data["items"] == [{"reference": "K-0001", "name": "Yellowstone"}]
+    assert first.data["items"] == [{"reference": "OK-0001"}]
     assert first.data["page"]["has_more"] is True
-    assert second.data["items"] == [{"reference": "K-0002", "name": "Yellowstone"}]
+    assert second.data["items"] == [{"reference": "K-0001"}]
     assert qso_only.data["items"] == []
 
 
