@@ -36,14 +36,18 @@ that `qlog` is connected.
 
 ### AppImage
 
-Download the AppImage for your architecture from [GitHub Releases](https://github.com/foldynl/QLog-MCP/releases), make it executable,
-and register it:
+Download the AppImage for your architecture from
+[GitHub Releases](https://github.com/foldynl/QLog-MCP/releases), install it under a stable name, and register that stable path:
 
 ```bash
-chmod +x qlog-mcp-0.2.0-x86_64.AppImage
-codex mcp add qlog -- /absolute/path/to/qlog-mcp-0.2.0-x86_64.AppImage \
+install -Dm755 qlog-mcp-0.2.0-x86_64.AppImage "$HOME/.local/bin/qlog-mcp.AppImage"
+codex mcp add qlog -- "$HOME/.local/bin/qlog-mcp.AppImage" \
   --database /absolute/path/to/qlog.db
 ```
+
+Keep the registered path unchanged. To update the server later, install the new AppImage
+to the same `$HOME/.local/bin/qlog-mcp.AppImage` path and start a new Codex session. This
+avoids changing the MCP configuration for every release.
 
 ### From Source Code
 
