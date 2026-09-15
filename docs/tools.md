@@ -162,19 +162,23 @@ The relation names describe set membership only:
 - `not_matched` returns catalog keys absent from that QSO set;
 - `qso_only` returns non-empty QSO keys absent from the filtered catalog.
 
-For `matched` and `not_matched`, `fields` and `sort` use catalog semantic fields. For
-`qso_only`, the result always contains `key` and `qso_count`, and sorting accepts only
-those two names. `qso_count` counts QSOs containing the key; a duplicate list item within
-one QSO counts once. List-valued QSO fields use the same normalized item semantics as
-`qso.aggregate` explosion. Null, empty, and whitespace-only keys are ignored, and text
-keys compare case-insensitively.
+For `matched` and `not_matched`, `fields` may contain catalog semantic fields and the
+optional QSO statistics `qso_count`, `first_qso`, and `last_qso`. The same three names are
+valid in `sort`, so a request such as `sort: [{"field": "qso_count", "direction": "desc"}]`
+returns the most frequent matched references first. `qso_count` counts filtered QSOs
+containing the key; `first_qso` and `last_qso` are the first and last valid UTC QSO-start
+timestamps. A `not_matched` row has `qso_count: 0` and null timestamps. For `qso_only`, the
+result always contains `key` and `qso_count`, and sorting accepts only those two names.
+A duplicate list item within one QSO counts once. List-valued QSO fields use the same
+normalized item semantics as `qso.aggregate` explosion. Null, empty, and whitespace-only
+keys are ignored, and text keys compare case-insensitively.
 
 Every response includes complete counts for `catalog_values`, `matched_values`,
 `not_matched_values`, and `qso_only_values`, even when `items` are paginated. Detail rows
 use deterministic `limit`/`offset` pagination. These four summary values count distinct
-non-empty keys, not QSO rows. Only `qso_count` in a `qso_only` item counts QSO occurrences.
-`qso_only` deliberately returns no QSO content; use `qso.query` with the returned key and
-`one_per_group` when evidence is needed.
+non-empty keys, not QSO rows. An item `qso_count` always counts QSO occurrences;
+`qso_only` includes it by default. `qso_only` deliberately returns no QSO content; use
+`qso.query` with the returned key and `one_per_group` when evidence is needed.
 
 For example, after the LLM has selected acceptable confirmation states from external
 DXCC rules, it can ask for the filtered catalog complement without transferring QSOs:

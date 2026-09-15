@@ -122,7 +122,8 @@ async def test_list_keys_use_item_semantics_and_qso_only_counts(
             {
                 **base,
                 "relation": "matched",
-                "fields": ["reference"],
+                "fields": ["reference", "qso_count"],
+                "sort": [{"field": "qso_count", "direction": "desc"}],
             },
         )
         logging_side = await client.call_tool(
@@ -147,8 +148,8 @@ async def test_list_keys_use_item_semantics_and_qso_only_counts(
         )
 
     assert matched.data["items"] == [
-        {"reference": "K-0001"},
-        {"reference": "OK-0001"},
+        {"reference": "K-0001", "qso_count": 2},
+        {"reference": "OK-0001", "qso_count": 1},
     ]
     assert matched.data["summary"] == {
         "catalog_values": 3,
@@ -287,37 +288,67 @@ async def test_satellite_matches_names_and_reports_qso_only_names(
     assert "cannot be matched" in invalid.content[0].text
 
 
-async def test_sota_aggregate_can_feed_catalog_enrichment(
+async def test_sota_match_returns_qso_statistics_with_catalog_facts(
     catalog_match_database,
 ) -> None:
     async with Client(create_server(catalog_match_database)) as client:
-        counts = await client.call_tool(
-            "qso.aggregate",
-            {
-                "scope": {"station_scope": "all"},
-                "filters": {
-                    "conditions": [{"field": "sota_ref", "op": "is_not_empty"}]
-                },
-                "group_by": ["sota_ref"],
-                "metrics": [{"function": "count", "as": "qso_count"}],
-            },
-        )
-        references = [row["sota_ref"] for row in counts.data["rows"]]
-        summits = await client.call_tool(
-            "catalog.query",
+        matched = await client.call_tool(
+            "catalog.match_qso",
             {
                 "catalog": "sota",
-                "filters": {
+                "qso_field": "sota_ref",
+                "scope": {"station_scope": "all"},
+                "relation": "matched",
+                "fields": [
+                    "reference",
+                    "points",
+                    "qso_count",
+                    "first_qso",
+                    "last_qso",
+                ],
+                "sort": [{"field": "qso_count", "direction": "desc"}],
+            },
+        )
+        not_matched = await client.call_tool(
+            "catalog.match_qso",
+            {
+                "catalog": "sota",
+                "qso_field": "sota_ref",
+                "scope": {"station_scope": "all"},
+                "qso_filters": {
                     "conditions": [
-                        {"field": "reference", "op": "in", "value": references}
+                        {"field": "mode", "op": "eq", "value": "CW"}
                     ]
                 },
-                "fields": ["reference", "points", "valid_from", "valid_to"],
+                "relation": "not_matched",
+                "fields": ["reference", "qso_count", "first_qso", "last_qso"],
             },
         )
 
-    assert set(references) == {"OK/PA-001", "W1/AM-001"}
-    assert {item["reference"] for item in summits.data["items"]} == set(references)
+    assert matched.data["items"] == [
+        {
+            "reference": "OK/PA-001",
+            "points": 10,
+            "qso_count": 1,
+            "first_qso": "2025-12-31T23:59:00Z",
+            "last_qso": "2025-12-31T23:59:00Z",
+        },
+        {
+            "reference": "W1/AM-001",
+            "points": 8,
+            "qso_count": 1,
+            "first_qso": "2026-01-15T12:30:00Z",
+            "last_qso": "2026-01-15T12:30:00Z",
+        },
+    ]
+    assert not_matched.data["items"] == [
+        {
+            "reference": "W1/AM-001",
+            "qso_count": 0,
+            "first_qso": None,
+            "last_qso": None,
+        }
+    ]
 
 
 async def test_rejects_invalid_mapping_and_unavailable_mapped_field(

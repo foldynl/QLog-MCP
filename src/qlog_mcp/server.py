@@ -57,9 +57,11 @@ def create_server(
             "the user to choose "
             "a station callsign (optionally a grid), a station profile, or all QSOs. Reuse the "
             "chosen scope until the user changes it. Use station_scope='all' only when the user "
-            "explicitly chooses all QSOs. Prefer qso.aggregate for statistical questions and "
-            "qso.compare_sets when a question compares keys from two QSO populations, so "
-            "individual QSOs are not transferred. Call qlog.get_schema once for each domain "
+            "explicitly chooses all QSOs. Use catalog.match_qso when catalog metadata together "
+            "with per-reference qso_count, first_qso, or last_qso answers the question. Prefer "
+            "qso.aggregate for other statistical questions and qso.compare_sets when a question "
+            "compares keys from two QSO populations, so individual QSOs are not transferred. "
+            "Call qlog.get_schema once for each domain "
             "when first needed and reuse that capability snapshot throughout the conversation. "
             "Do not call it before every operation; refresh it only after the MCP server or "
             "database changes, or after a compatibility error suggests that capabilities "
@@ -74,8 +76,9 @@ def create_server(
             "which QLog reference directories, semantic fields, and QSO mappings are "
             "available. When a catalog has contacted- and logging-station mappings, use "
             "the QSO schema's side and paired_field metadata to choose the intended one. Use "
-            "catalog.match_qso for present/absent set comparisons. Catalog data supplies facts "
-            "for analysis; apply award or contest rules outside this server. Membership data "
+            "catalog.match_qso for present/absent set comparisons and fixed per-reference QSO "
+            "statistics with catalog facts. Catalog data supplies facts for analysis; apply "
+            "award or contest rules outside this server. Membership data "
             "covers only club lists the user downloaded into QLog, not all clubs. Before "
             "analyzing a named club, verify it in membership_clubs; if absent, do not infer "
             "non-membership or use membership fields for that club. Membership catalogs do not "
@@ -310,9 +313,10 @@ def create_server(
             list[str] | None,
             Field(
                 description=(
-                    "Catalog fields returned for matched and not_matched; omit for catalog "
-                    "defaults. They do not select QSO fields. For qso_only omit this parameter "
-                    "or provide both key and qso_count; no QSO content is returned."
+                    "Catalog fields returned for matched and not_matched; add qso_count, "
+                    "first_qso, or last_qso for filtered QSO statistics. Omit for catalog "
+                    "defaults. For qso_only omit this parameter or provide both key and "
+                    "qso_count; no QSO content is returned."
                 )
             ),
         ] = None,
@@ -320,8 +324,9 @@ def create_server(
             list[CatalogMatchSort] | None,
             Field(
                 description=(
-                    "Catalog fields and directions for matched or not_matched. For qso_only "
-                    "only key and qso_count are sortable. Omit for key ascending."
+                    "Catalog fields or qso_count/first_qso/last_qso and their directions for "
+                    "matched or not_matched. For qso_only only key and qso_count are sortable. "
+                    "Omit for key ascending."
                 )
             ),
         ] = None,
@@ -345,11 +350,12 @@ def create_server(
         Field(
             description=(
                 "Object with relation, fields, effective_scope, page, and items. For matched "
-                "and not_matched, items are projected catalog rows; for qso_only, each item has "
-                "only key and qso_count. Summary counts distinct non-empty keys in the complete "
-                "filtered sets, not QSO rows, and is unaffected by detail pagination. It always "
-                "contains catalog_values, matched_values, not_matched_values, and "
-                "qso_only_values. Only qso_count is a QSO occurrence count."
+                "and not_matched, items are projected catalog rows with optionally requested "
+                "QSO statistics; for qso_only, each item has only key and qso_count. Summary "
+                "counts distinct non-empty keys in the complete filtered sets, not QSO rows, "
+                "and is unaffected by detail pagination. It always contains catalog_values, "
+                "matched_values, not_matched_values, and qso_only_values. Only qso_count is a "
+                "QSO occurrence count."
             )
         ),
     ]:

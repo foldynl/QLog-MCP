@@ -86,14 +86,17 @@ MATCH_RELATION_DESCRIPTIONS = {
     ),
 }
 
+MATCH_QSO_STAT_FIELDS = {"qso_count", "first_qso", "last_qso"}
+
 
 class CatalogMatchSort(BaseModel):
     """One result field used to order a catalog/QSO set comparison."""
 
     field: str = Field(
         description=(
-            "Catalog field for matched or not_matched results. For qso_only use key or "
-            "qso_count. A catalog sort field need not also be returned in fields."
+            "Catalog field or QSO statistic for matched or not_matched results. Supported "
+            "QSO statistics are qso_count, first_qso, and last_qso. For qso_only use key "
+            "or qso_count. A sort field need not also be returned in fields."
         )
     )
     direction: SortDirection = Field(
@@ -565,6 +568,25 @@ class CatalogQuery:
                         "item within one QSO counts once."
                     ),
                 },
+                "qso_statistics": {
+                    "fields": {
+                        "qso_count": (
+                            "Number of scoped and filtered QSOs containing the comparison key; "
+                            "a repeated equal list item within one QSO counts once."
+                        ),
+                        "first_qso": (
+                            "Earliest valid UTC QSO-start timestamp for the key, or null."
+                        ),
+                        "last_qso": (
+                            "Latest valid UTC QSO-start timestamp for the key, or null."
+                        ),
+                    },
+                    "usage": (
+                        "For matched and not_matched, request these names in fields; all three "
+                        "are also valid sort fields. not_matched rows have qso_count 0 and null "
+                        "timestamps."
+                    ),
+                },
                 "summary_fields": {
                     "catalog_values": (
                         "Distinct non-empty keys in the catalog after catalog_filters."
@@ -583,8 +605,14 @@ class CatalogQuery:
                     ),
                 },
                 "item_semantics": {
-                    "matched": "Catalog rows for keys present in the QSO key set.",
-                    "not_matched": "Catalog rows for keys absent from the QSO key set.",
+                    "matched": (
+                        "Catalog rows for keys present in the QSO key set; optional qso_count, "
+                        "first_qso, and last_qso describe the filtered QSO occurrences."
+                    ),
+                    "not_matched": (
+                        "Catalog rows for keys absent from the QSO key set; optional QSO "
+                        "statistics are 0 and null timestamps."
+                    ),
                     "qso_only": "Objects containing only key and qso_count, not QSO rows.",
                 },
                 "processing": (
@@ -695,14 +723,26 @@ class CatalogQuery:
             selected_names = self._resolve_match_fields(resolved, relation, fields)
             order_sql, sort_names = self._compile_match_sort(resolved, relation, sort)
             key_name = resolved.definition.key_field
+            catalog_sort_names = [
+                name for name in sort_names if name not in MATCH_QSO_STAT_FIELDS
+            ]
             catalog_names = (
                 [key_name]
                 if relation == MatchRelation.QSO_ONLY
-                else list(dict.fromkeys([*sort_names, key_name]))
+                else list(dict.fromkeys([*catalog_sort_names, key_name]))
+            )
+            requested_qso_stats = set(selected_names) | set(sort_names)
+            include_qso_stats = bool(requested_qso_stats & MATCH_QSO_STAT_FIELDS)
+            include_time_bounds = bool(
+                requested_qso_stats & {"first_qso", "last_qso"}
             )
 
             qso_ctes, parameters = await self.qso.compile_value_set(
-                connection, scope, qso_filters, qso_field
+                connection,
+                scope,
+                qso_filters,
+                qso_field,
+                include_time_bounds=include_time_bounds,
             )
             catalog_parameters: list[Any] = []
             catalog_where = (
@@ -749,7 +789,13 @@ class CatalogQuery:
                     }[relation],
                     case_insensitive=case_insensitive,
                 ),
-                self._match_rows_cte(relation, catalog_names, case_insensitive),
+                self._match_rows_cte(
+                    relation,
+                    catalog_names,
+                    case_insensitive,
+                    include_qso_stats,
+                    include_time_bounds,
+                ),
                 (
                     f'"_page" AS (SELECT * FROM "_relation_rows" ORDER BY {order_sql} '
                     'LIMIT ? OFFSET ?)'
@@ -757,13 +803,16 @@ class CatalogQuery:
             ]
             parameters.extend((limit + 1, offset))
             item_source = '"_page"'
-            needs_item_details = any(name not in catalog_names for name in selected_names)
+            needs_item_details = any(
+                name not in catalog_names and name not in MATCH_QSO_STAT_FIELDS
+                for name in selected_names
+            )
             if relation != MatchRelation.QSO_ONLY and needs_item_details:
                 item_names = list(dict.fromkeys([*selected_names, *sort_names, key_name]))
                 item_values = ", ".join(
                     (
                         f'MIN(p."{name}") AS "{name}"'
-                        if name in catalog_names
+                        if name in catalog_names or name in MATCH_QSO_STAT_FIELDS
                         else f'MIN({resolved.fields[name].expression()}) AS "{name}"'
                     )
                     for name in item_names
@@ -1090,14 +1139,30 @@ class CatalogQuery:
         relation: MatchRelation,
         fields: list[str] | None,
     ) -> list[str]:
-        if relation != MatchRelation.QSO_ONLY:
-            return CatalogQuery._resolve_fields(resolved, fields)
-        requested = ["key", "qso_count"] if fields is None else list(dict.fromkeys(fields))
-        if set(requested) != {"key", "qso_count"}:
-            raise InvalidQueryError(
-                "qso_only fields must contain both 'key' and 'qso_count'"
-            )
-        return requested
+        if relation == MatchRelation.QSO_ONLY:
+            requested = ["key", "qso_count"] if fields is None else list(dict.fromkeys(fields))
+            if set(requested) != {"key", "qso_count"}:
+                raise InvalidQueryError(
+                    "qso_only fields must contain both 'key' and 'qso_count'"
+                )
+            return requested
+
+        requested = (
+            [name for name in resolved.definition.default_fields if name in resolved.fields]
+            if fields is None
+            else fields
+        )
+        if not requested:
+            raise InvalidQueryError("fields must contain at least one semantic field")
+
+        result: list[str] = []
+        for name in requested:
+            if name in result:
+                continue
+            if name not in MATCH_QSO_STAT_FIELDS:
+                CatalogQuery._require_field(resolved, name, "field")
+            result.append(name)
+        return result
 
     @staticmethod
     def _compile_match_sort(
@@ -1117,7 +1182,7 @@ class CatalogQuery:
                     raise InvalidQueryError(
                         "qso_only sort field must be 'key' or 'qso_count'"
                     )
-            else:
+            elif item.field not in MATCH_QSO_STAT_FIELDS:
                 CatalogQuery._require_field(resolved, item.field, "sort field")
             parts.append(f'"{item.field}" {item.direction.value.upper()}')
             fields.append(item.field)
@@ -1130,6 +1195,8 @@ class CatalogQuery:
         relation: MatchRelation,
         selected_names: list[str],
         case_insensitive: bool,
+        include_qso_stats: bool,
+        include_time_bounds: bool,
     ) -> str:
         relation_key = 's."_key"'
         catalog_key = 'c."_key"'
@@ -1146,10 +1213,22 @@ class CatalogQuery:
                 f'JOIN "_qso_values" AS q ON {qso_join})'
             )
         columns = ", ".join(f'c."{name}" AS "{name}"' for name in selected_names)
+        qso_columns = ""
+        if include_qso_stats:
+            qso_columns = ', COALESCE(q."_qso_count", 0) AS "qso_count"'
+            if include_time_bounds:
+                qso_columns += (
+                    ', q."_first_qso" AS "first_qso", q."_last_qso" AS "last_qso"'
+                )
         return (
-            f'"_relation_rows" AS (SELECT 1 AS "_present", c."_key", {columns} '
+            f'"_relation_rows" AS (SELECT 1 AS "_present", c."_key", {columns}'
+            f'{qso_columns} '
             'FROM "_set_relation_values" AS s JOIN "_catalog_values" AS c '
-            f'ON {catalog_join})'
+            + (
+                f'ON {catalog_join} LEFT JOIN "_qso_values" AS q ON {qso_join})'
+                if include_qso_stats
+                else f'ON {catalog_join})'
+            )
         )
 
     @staticmethod
@@ -1162,6 +1241,8 @@ class CatalogQuery:
         result = {name: row[f"_item_{name}"] for name in fields}
         if relation != MatchRelation.QSO_ONLY:
             for name in fields:
+                if name in MATCH_QSO_STAT_FIELDS:
+                    continue
                 if resolved.fields[name].value_type == "boolean" and result[name] is not None:
                     result[name] = bool(result[name])
         return result

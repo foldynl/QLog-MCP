@@ -63,6 +63,12 @@ async def test_catalog_schema_discovers_semantic_capabilities(catalog_qlog_datab
         "qso_only",
     }
     assert set(schema["match_qso"]["qso_only_fields"]) == {"key", "qso_count"}
+    assert set(schema["match_qso"]["qso_statistics"]["fields"]) == {
+        "qso_count",
+        "first_qso",
+        "last_qso",
+    }
+    assert "request these names in fields" in schema["match_qso"]["qso_statistics"]["usage"]
     assert set(schema["match_qso"]["summary_fields"]) == {
         "catalog_values",
         "matched_values",
@@ -130,6 +136,18 @@ async def test_catalog_query_filters_sorts_and_pages(catalog_qlog_database) -> N
     assert second.data["items"][0]["reference"] == "OK-0001"
     assert second.data["page"]["has_more"] is False
     assert second.data["page"]["next_offset"] is None
+
+
+async def test_catalog_query_rejects_match_only_qso_statistics(catalog_qlog_database) -> None:
+    async with Client(create_server(catalog_qlog_database)) as client:
+        result = await client.call_tool(
+            "catalog.query",
+            {"catalog": "sota", "fields": ["qso_count"]},
+            raise_on_error=False,
+        )
+
+    assert result.is_error is True
+    assert "Unknown catalog field: qso_count" in result.content[0].text
 
 
 async def test_catalog_dates_are_normalized(catalog_qlog_database) -> None:

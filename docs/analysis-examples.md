@@ -107,36 +107,32 @@ Each comma-delimited park is normalized and compared separately. Use `catalog.qu
 the returned references when names and locations are needed. Any activation threshold
 still comes from external POTA rules and needs `qso.aggregate`.
 
-## SOTA activity followed by catalog enrichment
+## Most frequently contacted SOTA summits with catalog facts
 
-First let SQLite count QSOs per recorded summit reference:
-
-```json
-{
-  "scope": {"station_scope": "all"},
-  "filters": {
-    "conditions": [{"field": "sota_ref", "op": "is_not_empty"}]
-  },
-  "group_by": ["sota_ref"],
-  "metrics": [{"function": "count", "as": "qso_count"}]
-}
-```
-
-Then pass the returned references to `catalog.query` for directory facts:
+One `catalog.match_qso` call returns the filtered QSO statistics together with summit
+metadata:
 
 ```json
 {
   "catalog": "sota",
-  "filters": {
-    "conditions": [
-      {"field": "reference", "op": "in", "value": ["OK/PA-001", "W1/AM-001"]}
-    ]
-  },
-  "fields": ["reference", "name", "points", "valid_from", "valid_to"]
+  "qso_field": "sota_ref",
+  "scope": {"station_scope": "all"},
+  "relation": "matched",
+  "fields": [
+    "reference",
+    "name",
+    "points",
+    "qso_count",
+    "first_qso",
+    "last_qso"
+  ],
+  "sort": [{"field": "qso_count", "direction": "desc"}]
 }
 ```
 
-The LLM evaluates the counts and validity dates under the externally obtained SOTA rules.
+Use `sota_ref` for contacted activators' summits and `my_sota_ref` for the logging
+station's own activations. The catalog points are directory facts; the LLM still applies
+any external SOTA scoring or validity rules.
 
 ## WWFF references absent from a selected directory population
 

@@ -115,6 +115,10 @@ async def test_public_tool_schemas_are_described() -> None:
     assert tools["qlog.get_schema"].parameters["properties"]["domain"]["description"]
     assert "once per needed domain" in tools["qlog.get_schema"].description
     assert "Do not call it before every operation" in server.instructions
+    assert (
+        "Use catalog.match_qso when catalog metadata together with per-reference qso_count"
+        in server.instructions
+    )
     assert "covers only club lists the user downloaded into QLog" in server.instructions
     assert "if absent, do not infer non-membership" in server.instructions
     assert (
