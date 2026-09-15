@@ -22,6 +22,8 @@ from .catalog import (
 from .database import Database
 from .discovery import discover_database
 from .qso import (
+    MAX_AGGREGATE_CALCULATIONS,
+    AggregateCalculation,
     AggregateHaving,
     AggregateMetric,
     AggregateSort,
@@ -623,8 +625,10 @@ def create_server(
         description=(
             "Calculate server-side QSO statistics without returning individual QSOs. "
             "It supports caller-defined first/last deduplication, composite distinct values, "
-            "and fixed-size UTC time buckets. Use qlog.get_schema for field-specific "
-            "aggregate functions and exact processing semantics."
+            "fixed-size UTC time buckets, and safe arithmetic over numeric metric aliases. "
+            "Calculated values can be filtered and ordered before the result limit is applied. "
+            "All returned field aliases must be unique regardless of letter case. "
+            "Use qlog.get_schema for field-specific functions and exact processing semantics."
         ),
     )
     async def aggregate(
@@ -653,6 +657,20 @@ def create_server(
                 ),
             ),
         ],
+        calculations: Annotated[
+            list[AggregateCalculation] | None,
+            Field(
+                max_length=MAX_AGGREGATE_CALCULATIONS,
+                description=(
+                    "Optional ordered arithmetic over numeric metric aliases. Each item may "
+                    "reference metrics or earlier calculations by their exact as names and "
+                    "returns its own as field in every row. Supported operations are add, "
+                    "subtract, multiply, divide, and percentage. divide returns a ratio; "
+                    "percentage returns that ratio times 100. Division by zero or a null input "
+                    "returns null. Calculation aliases may be used by having and order_by."
+                ),
+            ),
+        ] = None,
         filters: Annotated[
             FilterGroup | None,
             Field(
@@ -673,8 +691,9 @@ def create_server(
             list[AggregateHaving] | None,
             Field(
                 description=(
-                    "Optional metric-alias comparisons applied after aggregation; "
-                    "multiple conditions are combined with AND."
+                    "Optional metric- or calculation-alias comparisons applied after all "
+                    "requested values are calculated and before ordering and limit; multiple "
+                    "conditions are combined with AND."
                 )
             ),
         ] = None,
@@ -682,8 +701,9 @@ def create_server(
             list[AggregateSort] | None,
             Field(
                 description=(
-                    "Optional ordering by group dimensions or metric aliases. Omit to sort "
-                    "by the first metric descending and then by group dimensions."
+                    "Optional ordering by group dimensions, metric aliases, or calculation "
+                    "aliases before limit. Undefined calculation values sort last. Omit to "
+                    "sort by the first metric descending and then by group dimensions."
                 ),
             ),
         ] = None,
@@ -700,8 +720,10 @@ def create_server(
         Field(
             description=(
                 "Object with rows, group_by and metrics output-name lists, effective_scope, "
-                "limit, returned, and truncated. Each row is keyed by the requested group "
-                "and metric aliases; truncated=true means additional groups were omitted."
+                "limit, returned, and truncated. When calculations are requested, it also "
+                "contains their ordered output-name list and every row contains those numeric "
+                "or null values after the metric fields. truncated=true means additional "
+                "post-having groups were omitted after ordering."
             )
         ),
     ]:
@@ -711,6 +733,7 @@ def create_server(
             one_per_group,
             group_by,
             metrics,
+            calculations,
             having,
             order_by,
             limit,

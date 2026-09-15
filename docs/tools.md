@@ -363,7 +363,9 @@ The QSO schema also publishes technical fields derived from the logged ADIF valu
 `qso.aggregate` calculates statistics in SQLite and returns aggregate rows, not individual QSOs. It uses the same required `scope` and optional nested `filters` as `qso.query`. Every semantic field available in `qlog.get_schema` may be used in `group_by`, including fields that commonly have many distinct values. The
 response is therefore limited to 100 groups by default and 1000 at most, and reports `truncated` when more groups matched. Aggregate results are not offset paginated.
 
-Aggregation applies operations in this order: scope and top-level filters, requested list expansion, `one_per_group`, grouping and metrics, `having`, then ordering and limit. `one_per_group` uses the same deterministic QSO datetime and contact-ID ordering as `qso.query`. When its key names a list field also exploded by `group_by`, the individual exploded item is used in that key. Metric-local filters see only the retained rows.
+Aggregation applies operations in this order: scope and top-level filters, requested list expansion, `one_per_group`, grouping and metrics, calculations, `having`, then ordering and limit. `one_per_group` uses the same deterministic QSO datetime and contact-ID ordering as `qso.query`. When its key names a list field also exploded by `group_by`, the individual exploded item is used in that key. Metric-local filters see only the retained rows.
+
+All group, metric, and calculation output names must be unique regardless of letter case. References from calculations, `having`, and `order_by` use the exact declared name.
 
 For example, after an LLM reads external contest rules and selects the appropriate duplicate key, it can count the retained rows without transferring individual QSOs:
 
@@ -417,11 +419,44 @@ For `distinct_count` only, set `explode=true` to count distinct semantic items i
 {"function":"distinct_count","field":"pota_ref","explode":true,"as":"parks"}
 ```
 
-`having` filters completed aggregate groups by metric alias. It supports `eq`, `neq`, `gt`, `gte`, `lt`, and `lte`; multiple conditions are combined with `and`. Values are passed to SQLite as bound parameters.
+`having` filters completed aggregate groups by metric or calculation alias. It supports `eq`, `neq`, `gt`, `gte`, `lt`, and `lte`; multiple conditions are combined with `and`. Values are passed to SQLite as bound parameters.
 
 Missing group values (`NULL`, empty strings, or whitespace-only strings) are returned in one `null` group. Text grouping and distinct counting are case-insensitive, matching the existing filter behavior.
 
-Each metric requires an `as` name used in returned rows and may have its own optional `filters`. Metric filters are combined with the query scope and top-level filters. This permits conditional metrics such as all QSOs and European QSOs in the same yearly groups. `order_by` may refer to a group dimension or metric alias. Without `order_by`, results are ordered by the first metric descending and then by group dimensions ascending.
+Each metric requires an `as` name used in returned rows and may have its own optional `filters`. Metric filters are combined with the query scope and top-level filters. This permits conditional metrics such as all QSOs and European QSOs in the same yearly groups.
+
+Optional `calculations` derive numeric values from metric results without returning QSO rows to the caller. Each calculation names `left` and `right` inputs, an operation, and its returned `as` field. Inputs must exactly name a numeric metric or an earlier calculation in the same ordered list; group dimensions, forward references, arbitrary SQL, constants, and general expressions are not accepted. Up to 20 calculations may use `add`, `subtract`, `multiply`, `divide`, or `percentage`. `divide` returns a floating-point ratio such as `0.75`; `percentage` returns that ratio multiplied by 100, such as `75.0`. A null input or zero denominator returns `null`, and no automatic rounding is applied.
+
+For example, this keeps only bands with at least 50 QSOs and orders the complete qualifying result by LoTW confirmation percentage before applying `limit`:
+
+```json
+{
+  "scope": {"station_scope": "all"},
+  "group_by": ["band"],
+  "metrics": [
+    {"function": "count", "as": "total"},
+    {
+      "function": "count",
+      "as": "confirmed",
+      "filters": {
+        "conditions": [{"field": "lotw_received", "op": "eq", "value": "Y"}]
+      }
+    }
+  ],
+  "calculations": [
+    {
+      "op": "percentage",
+      "left": "confirmed",
+      "right": "total",
+      "as": "confirmation_rate"
+    }
+  ],
+  "having": [{"field": "total", "op": "gte", "value": 50}],
+  "order_by": [{"field": "confirmation_rate", "direction": "desc"}]
+}
+```
+
+Later calculations may use earlier ones, so separate old and new confirmation percentages can feed a `subtract` calculation such as `new_rate - old_rate`. Subtracting percentages yields percentage-point change. Calculation aliases may also be used by `having`. They are returned after metric fields in each row, and the response adds their ordered names under `calculations`; requests without calculations retain the previous response shape. Undefined calculation values always sort last. `order_by` may otherwise refer to a group dimension or metric alias. Without `order_by`, results retain the existing order: first metric descending, then group dimensions ascending.
 
 The semantic `mode` field follows QLog's operator-facing display: it returns `submode` when present and otherwise `mode`. Thus an FT8 record stored as `mode=MFSK, submode=FT8` matches `mode = FT8`. The physical ADIF category remains available as `adif_mode`, and `submode` can also be requested directly.
 

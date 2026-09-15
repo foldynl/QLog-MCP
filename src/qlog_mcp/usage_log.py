@@ -147,7 +147,7 @@ class UsageLoggingMiddleware(Middleware):
                 "offset": cls._integer(arguments.get("offset"), 0),
             }
         if tool == "qso.aggregate":
-            return {
+            summary = {
                 "scope": cls._summarize_scope(arguments.get("scope")),
                 "filters": cls._summarize_filters(arguments.get("filters")),
                 "group_by": cls._summarize_group_by(arguments.get("group_by")),
@@ -158,6 +158,11 @@ class UsageLoggingMiddleware(Middleware):
                 "order_by": cls._summarize_sort(arguments.get("order_by")),
                 "limit": cls._integer(arguments.get("limit"), 100),
             }
+            if arguments.get("calculations") is not None:
+                summary["calculations"] = cls._summarize_calculations(
+                    arguments.get("calculations")
+                )
+            return summary
         if tool == "qso.compare_sets":
             return {
                 "left": cls._summarize_qso_set(arguments.get("left")),
@@ -269,6 +274,21 @@ class UsageLoggingMiddleware(Middleware):
                 summary["explode"] = True
             metrics.append(summary)
         return metrics
+
+    @classmethod
+    def _summarize_calculations(cls, value: Any) -> list[dict[str, str]] | None:
+        if not isinstance(value, list):
+            return None
+        return [
+            {
+                "op": cls._identifier(item.get("op")),
+                "left": cls._identifier(item.get("left")),
+                "right": cls._identifier(item.get("right")),
+                "as": cls._identifier(item.get("as")),
+            }
+            for item in value
+            if isinstance(item, dict)
+        ]
 
     @classmethod
     def _summarize_group_by(cls, value: Any) -> list[Any] | None:

@@ -173,6 +173,306 @@ async def test_having_rejects_unknown_metric_alias(qlog_database) -> None:
     assert "Unknown aggregate having field: other_count" in result.content[0].text
 
 
+async def test_calculates_filters_and_orders_confirmation_rate(qlog_database) -> None:
+    async with Client(create_server(qlog_database)) as client:
+        result = await client.call_tool(
+            "qso.aggregate",
+            {
+                "scope": {"station_scope": "all"},
+                "one_per_group": {"fields": ["callsign"], "keep": "first"},
+                "group_by": ["band"],
+                "metrics": [
+                    {"function": "count", "as": "total"},
+                    {
+                        "function": "count",
+                        "as": "confirmed",
+                        "filters": {
+                            "conditions": [
+                                {"field": "lotw_received", "value": "Y"}
+                            ]
+                        },
+                    },
+                ],
+                "calculations": [
+                    {
+                        "op": "percentage",
+                        "left": "confirmed",
+                        "right": "total",
+                        "as": "confirmation_rate",
+                    }
+                ],
+                "having": [
+                    {"field": "total", "op": "gte", "value": 1},
+                    {"field": "confirmation_rate", "op": "gt", "value": 30},
+                ],
+                "order_by": [
+                    {"field": "confirmation_rate", "direction": "desc"}
+                ],
+                "limit": 1,
+            },
+        )
+
+    assert result.data["rows"] == [
+        {
+            "band": "15m",
+            "total": 1,
+            "confirmed": 1,
+            "confirmation_rate": 100.0,
+        }
+    ]
+    assert result.data["metrics"] == ["total", "confirmed"]
+    assert result.data["calculations"] == ["confirmation_rate"]
+    assert result.data["truncated"] is True
+
+
+async def test_supports_maximum_calculation_chain(qlog_database) -> None:
+    calculations = []
+    previous = "total"
+    for index in range(20):
+        output = f"calculation_{index}"
+        calculations.append(
+            {"op": "add", "left": previous, "right": previous, "as": output}
+        )
+        previous = output
+
+    async with Client(create_server(qlog_database)) as client:
+        result = await client.call_tool(
+            "qso.aggregate",
+            {
+                "scope": {"station_scope": "all"},
+                "group_by": [],
+                "metrics": [{"function": "count", "as": "total"}],
+                "calculations": calculations,
+            },
+        )
+
+    row = result.data["rows"][0]
+    assert row["total"] == 4
+    assert row[previous] == 4 * 2**20
+    assert result.data["calculations"] == [
+        f"calculation_{index}" for index in range(20)
+    ]
+
+
+async def test_supports_all_calculation_operations_and_zero_denominator(
+    qlog_database,
+) -> None:
+    async with Client(create_server(qlog_database)) as client:
+        result = await client.call_tool(
+            "qso.aggregate",
+            {
+                "scope": {"station_scope": "all"},
+                "group_by": [],
+                "metrics": [
+                    {"function": "count", "as": "total"},
+                    {
+                        "function": "count",
+                        "as": "confirmed",
+                        "filters": {
+                            "conditions": [{"field": "lotw_received", "value": "Y"}]
+                        },
+                    },
+                    {
+                        "function": "count",
+                        "as": "zero",
+                        "filters": {
+                            "conditions": [{"field": "lotw_received", "value": "R"}]
+                        },
+                    },
+                ],
+                "calculations": [
+                    {"op": "add", "left": "total", "right": "confirmed", "as": "added"},
+                    {
+                        "op": "subtract",
+                        "left": "total",
+                        "right": "confirmed",
+                        "as": "subtracted",
+                    },
+                    {
+                        "op": "multiply",
+                        "left": "total",
+                        "right": "confirmed",
+                        "as": "multiplied",
+                    },
+                    {
+                        "op": "divide",
+                        "left": "total",
+                        "right": "confirmed",
+                        "as": "divided",
+                    },
+                    {
+                        "op": "percentage",
+                        "left": "confirmed",
+                        "right": "total",
+                        "as": "percentage",
+                    },
+                    {
+                        "op": "divide",
+                        "left": "total",
+                        "right": "zero",
+                        "as": "undefined",
+                    },
+                ],
+            },
+        )
+
+    row = result.data["rows"][0]
+    assert row["added"] == 6
+    assert row["subtracted"] == 2
+    assert row["multiplied"] == 8
+    assert row["divided"] == 2.0
+    assert row["percentage"] == 50.0
+    assert row["undefined"] is None
+
+
+async def test_chains_period_rates_and_orders_null_last(qlog_database) -> None:
+    old_period = {
+        "conditions": [
+            {"field": "datetime", "op": "gte", "value": "2025-01-01"},
+            {"field": "datetime", "op": "lt", "value": "2026-01-01"},
+        ]
+    }
+    new_period = {
+        "conditions": [
+            {"field": "datetime", "op": "gte", "value": "2026-01-01"}
+        ]
+    }
+    async with Client(create_server(qlog_database)) as client:
+        result = await client.call_tool(
+            "qso.aggregate",
+            {
+                "scope": {"station_scope": "all"},
+                "group_by": ["band"],
+                "metrics": [
+                    {"function": "count", "as": "old_total", "filters": old_period},
+                    {"function": "count", "as": "new_total", "filters": new_period},
+                    {
+                        "function": "count",
+                        "as": "old_confirmed",
+                        "filters": {
+                            "conditions": [
+                                *old_period["conditions"],
+                                {"field": "lotw_received", "value": "Y"},
+                            ]
+                        },
+                    },
+                    {
+                        "function": "count",
+                        "as": "new_confirmed",
+                        "filters": {
+                            "conditions": [
+                                *new_period["conditions"],
+                                {"field": "lotw_received", "value": "Y"},
+                            ]
+                        },
+                    },
+                ],
+                "calculations": [
+                    {
+                        "op": "percentage",
+                        "left": "old_confirmed",
+                        "right": "old_total",
+                        "as": "old_rate",
+                    },
+                    {
+                        "op": "percentage",
+                        "left": "new_confirmed",
+                        "right": "new_total",
+                        "as": "new_rate",
+                    },
+                    {
+                        "op": "subtract",
+                        "left": "new_rate",
+                        "right": "old_rate",
+                        "as": "rate_change",
+                    },
+                ],
+                "order_by": [{"field": "rate_change", "direction": "asc"}],
+            },
+        )
+
+    assert [row["band"] for row in result.data["rows"]] == ["20m", "15m"]
+    first, second = result.data["rows"]
+    assert first["old_rate"] == 100.0
+    assert first["new_rate"] == 0.0
+    assert first["rate_change"] == -100.0
+    assert second["old_rate"] is None
+    assert second["rate_change"] is None
+
+
+@pytest.mark.parametrize(
+    ("metrics", "calculations", "having", "message"),
+    [
+        (
+            [{"function": "count", "as": "total"}],
+            [
+                {
+                    "op": "divide",
+                    "left": "later",
+                    "right": "total",
+                    "as": "rate",
+                },
+                {"op": "add", "left": "total", "right": "total", "as": "later"},
+            ],
+            None,
+            "Unknown or forward aggregate calculation operand: later",
+        ),
+        (
+            [{"function": "min", "field": "datetime", "as": "first_qso"}],
+            [
+                {
+                    "op": "add",
+                    "left": "first_qso",
+                    "right": "first_qso",
+                    "as": "invalid",
+                }
+            ],
+            None,
+            "Aggregate calculation operand must be numeric: first_qso",
+        ),
+        (
+            [{"function": "count", "as": "Total"}],
+            [{"op": "add", "left": "Total", "right": "Total", "as": "total"}],
+            None,
+            "Duplicate aggregate result field: total",
+        ),
+        (
+            [
+                {"function": "count", "as": "Total"},
+                {"function": "count", "as": "total"},
+            ],
+            [],
+            None,
+            "Duplicate aggregate result field: total",
+        ),
+        (
+            [{"function": "count", "as": "total"}],
+            [{"op": "divide", "left": "total", "right": "total", "as": "rate"}],
+            [{"field": "rate", "value": "one"}],
+            "Aggregate calculation having value must be numeric: rate",
+        ),
+    ],
+)
+async def test_rejects_invalid_aggregate_calculations(
+    qlog_database, metrics, calculations, having, message
+) -> None:
+    async with Client(create_server(qlog_database)) as client:
+        result = await client.call_tool(
+            "qso.aggregate",
+            {
+                "scope": {"station_scope": "all"},
+                "group_by": [],
+                "metrics": metrics,
+                "calculations": calculations,
+                "having": having,
+            },
+            raise_on_error=False,
+        )
+
+    assert result.is_error is True
+    assert message in result.content[0].text
+
+
 @pytest.mark.parametrize(
     ("group_by", "expected"),
     [
@@ -394,6 +694,9 @@ async def test_explodes_list_groups_and_distinct_metrics(list_qlog_database) -> 
                 "scope": {"station_scope": "all"},
                 "group_by": [{"field": "pota_ref", "explode": True, "as": "park"}],
                 "metrics": [{"function": "count", "as": "qsos"}],
+                "calculations": [
+                    {"op": "add", "left": "qsos", "right": "qsos", "as": "double_qsos"}
+                ],
                 "order_by": [{"field": "park", "direction": "asc"}],
             },
         )
@@ -456,10 +759,10 @@ async def test_explodes_list_groups_and_distinct_metrics(list_qlog_database) -> 
         )
 
     assert by_park.data["rows"] == [
-        {"park": "JA-0001", "qsos": 1},
-        {"park": "K-0001", "qsos": 2},
-        {"park": "K-1000;K-2000", "qsos": 1},
-        {"park": "K-4562", "qsos": 1},
+        {"park": "JA-0001", "qsos": 1, "double_qsos": 2},
+        {"park": "K-0001", "qsos": 2, "double_qsos": 4},
+        {"park": "K-1000;K-2000", "qsos": 1, "double_qsos": 2},
+        {"park": "K-4562", "qsos": 1, "double_qsos": 2},
     ]
     assert totals.data["rows"] == [
         {

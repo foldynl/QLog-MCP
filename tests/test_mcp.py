@@ -162,6 +162,18 @@ async def test_public_tool_schemas_are_described() -> None:
         for parameter in aggregate.parameters["properties"].values()
     )
     assert aggregate.parameters["properties"]["metrics"]["minItems"] == 1
+    calculations = aggregate.parameters["properties"]["calculations"]["anyOf"][0]
+    assert calculations["maxItems"] == 20
+    calculation = aggregate.parameters["$defs"]["AggregateCalculation"]["properties"]
+    assert "earlier calculation" in calculation["left"]["description"]
+    assert "having, and order_by" in calculation["as"]["description"]
+    assert set(aggregate.parameters["$defs"]["CalculationOperator"]["enum"]) == {
+        "add",
+        "subtract",
+        "multiply",
+        "divide",
+        "percentage",
+    }
     assert "requested list expansion" in aggregate.parameters["properties"][
         "one_per_group"
     ]["description"]
@@ -292,6 +304,17 @@ async def test_qlog_context_and_qso_schema(qlog_database) -> None:
         "requested list expansion",
         "one_per_group",
     ]
+    assert schema.data["qso"]["aggregation"]["processing_order"][3:] == [
+        "group_by and metrics",
+        "calculations",
+        "having",
+        "order and limit",
+    ]
+    calculations = schema.data["qso"]["aggregation"]["calculations"]
+    assert calculations["max_items"] == 20
+    assert calculations["result_type"] == "number or null"
+    assert "floating-point ratio" in calculations["operators"]["divide"]
+    assert "null calculations sort last" in calculations["nulls"]
     assert "typed tuples" in schema.data["qso"]["aggregation"][
         "composite_distinct_count"
     ]

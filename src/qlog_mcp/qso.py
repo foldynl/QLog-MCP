@@ -104,6 +104,32 @@ AGGREGATE_FUNCTION_DESCRIPTIONS = {
 }
 
 
+class CalculationOperator(str, Enum):
+    """Safe arithmetic operation over aggregate result aliases."""
+
+    ADD = "add"
+    SUBTRACT = "subtract"
+    MULTIPLY = "multiply"
+    DIVIDE = "divide"
+    PERCENTAGE = "percentage"
+
+
+CALCULATION_OPERATOR_DESCRIPTIONS = {
+    CalculationOperator.ADD: "Add left and right.",
+    CalculationOperator.SUBTRACT: "Subtract right from left.",
+    CalculationOperator.MULTIPLY: "Multiply left by right.",
+    CalculationOperator.DIVIDE: (
+        "Divide left by right as a floating-point ratio; return null when right is zero or "
+        "either input is null."
+    ),
+    CalculationOperator.PERCENTAGE: (
+        "Return 100 times left divided by right; return null when right is zero or either "
+        "input is null."
+    ),
+}
+MAX_AGGREGATE_CALCULATIONS = 20
+
+
 class StationScope(str, Enum):
     """Method used to select the logging station's QSOs."""
 
@@ -329,11 +355,47 @@ class AggregateMetric(BaseModel):
         return self
 
 
+class AggregateCalculation(BaseModel):
+    """One arithmetic result derived from numeric aggregate aliases."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    op: CalculationOperator = Field(
+        description=(
+            "Arithmetic operation. divide returns a ratio; percentage returns that ratio "
+            "multiplied by 100."
+        )
+    )
+    left: str = Field(
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+        description=(
+            "Exact alias of a numeric metric or an earlier calculation in this request."
+        ),
+    )
+    right: str = Field(
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+        description=(
+            "Exact alias of a numeric metric or an earlier calculation in this request."
+        ),
+    )
+    output_name: str = Field(
+        alias="as",
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+        description=(
+            "Unique name returned for this calculation and available to later calculations, "
+            "having, and order_by."
+        ),
+    )
+
+
 class AggregateSort(BaseModel):
-    """One returned aggregate dimension or metric used to order groups."""
+    """One returned aggregate dimension, metric, or calculation used to order groups."""
 
     field: str = Field(
-        description="A group_by dimension or metric alias returned by this aggregation."
+        description=(
+            "A group_by dimension, metric alias, or calculation alias returned by this "
+            "aggregation. Undefined calculation values are always ordered last."
+        )
     )
     direction: SortDirection = Field(
         default=SortDirection.ASC,
@@ -344,13 +406,18 @@ class AggregateSort(BaseModel):
 class AggregateHaving(BaseModel):
     """Post-aggregation comparison that removes completed result groups."""
 
-    field: str = Field(description="Metric alias produced by this aggregation.")
+    field: str = Field(
+        description="Metric or calculation alias produced by this aggregation."
+    )
     op: HavingOperator = Field(
         default=HavingOperator.EQ,
-        description="Comparison applied to the aggregate metric.",
+        description="Comparison applied to the aggregate metric or calculation.",
     )
     value: Scalar = Field(
-        description="Scalar threshold compared with the completed aggregate metric."
+        description=(
+            "Scalar threshold compared with the completed metric or calculation. A "
+            "calculation requires a numeric threshold."
+        )
     )
 
 
@@ -1729,6 +1796,7 @@ class QsoQuery:
                     "requested list expansion",
                     "one_per_group",
                     "group_by and metrics",
+                    "calculations",
                     "having",
                     "order and limit",
                 ],
@@ -1746,6 +1814,26 @@ class QsoQuery:
                 "functions": {
                     function.value: AGGREGATE_FUNCTION_DESCRIPTIONS[function]
                     for function in AggregateFunction
+                },
+                "calculations": {
+                    "max_items": MAX_AGGREGATE_CALCULATIONS,
+                    "result_type": "number or null",
+                    "operands": (
+                        "Exact aliases of numeric metrics or earlier calculations; list order "
+                        "defines dependencies, and group dimensions are not operands."
+                    ),
+                    "operators": {
+                        operator.value: CALCULATION_OPERATOR_DESCRIPTIONS[operator]
+                        for operator in CalculationOperator
+                    },
+                    "nulls": (
+                        "A null input produces null. divide and percentage also produce null "
+                        "when the right operand is zero; null calculations sort last."
+                    ),
+                    "post_processing": (
+                        "Calculation aliases are returned in each row and may be referenced by "
+                        "later calculations, having, and order_by before limit is applied."
+                    ),
                 },
                 "group_by": {
                     "all_fields": True,
@@ -1897,12 +1985,18 @@ class QsoQuery:
         one_per_group: OnePerGroup | None,
         group_by: list[str | GroupBySpec],
         metrics: list[AggregateMetric],
+        calculations: list[AggregateCalculation] | None,
         having: list[AggregateHaving] | None,
         order_by: list[AggregateSort] | None,
         limit: int,
     ) -> dict[str, Any]:
         if not metrics:
             raise InvalidQueryError("metrics must contain at least one aggregate metric")
+        calculation_items = calculations or []
+        if len(calculation_items) > MAX_AGGREGATE_CALCULATIONS:
+            raise InvalidQueryError(
+                f"calculations must contain at most {MAX_AGGREGATE_CALCULATIONS} items"
+            )
         if not 1 <= limit <= 1000:
             raise InvalidQueryError("limit must be between 1 and 1000")
 
@@ -1915,7 +2009,9 @@ class QsoQuery:
                 group_by, columns, group_parameters
             )
             group_names = [name for name, _ in group_expressions]
-            self._validate_metric_names(group_names, metrics)
+            self._validate_aggregate_names(group_names, metrics, calculation_items)
+            metric_names = [metric.output_name for metric in metrics]
+            calculation_names = [item.output_name for item in calculation_items]
 
             metric_parameters: list[Any] = []
             metric_sql = [
@@ -1950,20 +2046,52 @@ class QsoQuery:
                 else ""
             )
             having_parameters: list[Any] = []
-            having_sql = self._compile_having(having, metrics, having_parameters)
-            order_sql = self._compile_aggregate_sort(order_by, group_names, metrics)
-            sql = (
+            aggregate_sql = (
                 f"{prefix}SELECT {', '.join(select_groups + metric_sql)} FROM {from_sql}"
-                f"{main_where}{group_sql}{having_sql} ORDER BY {order_sql} LIMIT ?"
+                f"{main_where}{group_sql}"
             )
+            if calculation_items:
+                calculated_sql = self._compile_calculations(
+                    aggregate_sql,
+                    group_names,
+                    metrics,
+                    calculation_items,
+                    columns,
+                )
+                having_sql = self._compile_having(
+                    having,
+                    set(metric_names + calculation_names),
+                    having_parameters,
+                    clause=" WHERE ",
+                    calculation_aliases=set(calculation_names),
+                )
+                order_sql = self._compile_aggregate_sort(
+                    order_by,
+                    group_names,
+                    metric_names,
+                    calculation_names,
+                )
+                sql = (
+                    f'SELECT * FROM ({calculated_sql}) AS "_calculated"{having_sql} '
+                    f"ORDER BY {order_sql} LIMIT ?"
+                )
+            else:
+                having_sql = self._compile_having(
+                    having, set(metric_names), having_parameters
+                )
+                order_sql = self._compile_aggregate_sort(
+                    order_by, group_names, metric_names, []
+                )
+                sql = f"{aggregate_sql}{having_sql} ORDER BY {order_sql} LIMIT ?"
             parameters.extend(having_parameters)
             parameters.append(limit + 1)
 
             rows = await self._execute_sql(connection, sql, parameters)
 
         has_more = len(rows) > limit
+        output_names = group_names + metric_names + calculation_names
         result_rows = [
-            {name: row[name] for name in group_names + [metric.output_name for metric in metrics]}
+            {name: row[name] for name in output_names}
             for row in rows[:limit]
         ]
         boolean_groups = [
@@ -1984,10 +2112,10 @@ class QsoQuery:
                     except json.JSONDecodeError:
                         pass
 
-        return {
+        result = {
             "rows": result_rows,
             "group_by": group_names,
-            "metrics": [metric.output_name for metric in metrics],
+            "metrics": metric_names,
             "effective_scope": scope.model_dump(
                 mode="json", exclude_defaults=True, exclude_none=True
             ),
@@ -1995,6 +2123,9 @@ class QsoQuery:
             "returned": len(result_rows),
             "truncated": has_more,
         }
+        if calculation_names:
+            result["calculations"] = calculation_names
+        return result
 
     def _resolve_aggregate_group_by(
         self,
@@ -2472,16 +2603,22 @@ class QsoQuery:
         return f"({bucket_index} * ?)"
 
     @staticmethod
-    def _validate_metric_names(
-        group_by: list[str], metrics: list[AggregateMetric]
+    def _validate_aggregate_names(
+        group_by: list[str],
+        metrics: list[AggregateMetric],
+        calculations: list[AggregateCalculation],
     ) -> None:
-        names = set(group_by)
-        for metric in metrics:
-            if metric.output_name in names:
-                raise InvalidQueryError(
-                    f"Duplicate aggregate result field: {metric.output_name}"
-                )
-            names.add(metric.output_name)
+        normalized_names: set[str] = set()
+        names = [
+            *group_by,
+            *(metric.output_name for metric in metrics),
+            *(calculation.output_name for calculation in calculations),
+        ]
+        for name in names:
+            normalized = name.casefold()
+            if normalized in normalized_names:
+                raise InvalidQueryError(f"Duplicate aggregate result field: {name}")
+            normalized_names.add(normalized)
 
     async def _compile_scope(
         self,
@@ -2822,16 +2959,80 @@ class QsoQuery:
             )
         return field
 
+    def _compile_calculations(
+        self,
+        aggregate_sql: str,
+        group_by: list[str],
+        metrics: list[AggregateMetric],
+        calculations: list[AggregateCalculation],
+        columns: set[str],
+    ) -> str:
+        known = set(group_by) | {metric.output_name for metric in metrics}
+        numeric = {
+            metric.output_name
+            for metric in metrics
+            if self._metric_is_numeric(metric, columns)
+        }
+        ctes = [f'"_aggregate" AS ({aggregate_sql})']
+        source = '"_aggregate"'
+        for index, calculation in enumerate(calculations):
+            for operand in (calculation.left, calculation.right):
+                if operand not in known:
+                    raise InvalidQueryError(
+                        f"Unknown or forward aggregate calculation operand: {operand}"
+                    )
+                if operand not in numeric:
+                    raise InvalidQueryError(
+                        f"Aggregate calculation operand must be numeric: {operand}"
+                    )
+
+            left = f'{source}."{calculation.left}"'
+            right = f'{source}."{calculation.right}"'
+            if calculation.op == CalculationOperator.ADD:
+                expression = f"({left} + {right})"
+            elif calculation.op == CalculationOperator.SUBTRACT:
+                expression = f"({left} - {right})"
+            elif calculation.op == CalculationOperator.MULTIPLY:
+                expression = f"({left} * {right})"
+            elif calculation.op == CalculationOperator.DIVIDE:
+                expression = f"(1.0 * {left} / NULLIF({right}, 0))"
+            else:
+                expression = f"(100.0 * {left} / NULLIF({right}, 0))"
+
+            target = f'"_calculation_{index}"'
+            ctes.append(
+                f'{target} AS (SELECT {source}.*, '
+                f'{expression} AS "{calculation.output_name}" FROM {source})'
+            )
+            source = target
+            known.add(calculation.output_name)
+            numeric.add(calculation.output_name)
+        return f"WITH {', '.join(ctes)} SELECT * FROM {source}"
+
+    def _metric_is_numeric(
+        self, metric: AggregateMetric, columns: set[str]
+    ) -> bool:
+        if metric.function in {
+            AggregateFunction.COUNT,
+            AggregateFunction.DISTINCT_COUNT,
+            AggregateFunction.SUM,
+            AggregateFunction.AVG,
+        }:
+            return True
+        return self._aggregate_field(metric, columns).value_type in {"integer", "number"}
+
     @staticmethod
     def _compile_aggregate_sort(
         order_by: list[AggregateSort] | None,
         group_by: list[str],
-        metrics: list[AggregateMetric],
+        metrics: list[str],
+        calculations: list[str],
     ) -> str:
-        allowed = set(group_by) | {metric.output_name for metric in metrics}
+        allowed = set(group_by + metrics + calculations)
         requested = order_by or [
-            AggregateSort(field=metrics[0].output_name, direction=SortDirection.DESC)
+            AggregateSort(field=metrics[0], direction=SortDirection.DESC)
         ]
+        calculation_aliases = set(calculations)
 
         parts: list[str] = []
         sorted_fields: set[str] = set()
@@ -2842,6 +3043,8 @@ class QsoQuery:
                 )
             if item.field in sorted_fields:
                 continue
+            if item.field in calculation_aliases:
+                parts.append(f'("{item.field}" IS NULL) ASC')
             parts.append(f'"{item.field}" {item.direction.value.upper()}')
             sorted_fields.add(item.field)
         for name in group_by:
@@ -2852,13 +3055,16 @@ class QsoQuery:
     @staticmethod
     def _compile_having(
         having: list[AggregateHaving] | None,
-        metrics: list[AggregateMetric],
+        aliases: set[str],
         parameters: list[Any],
+        *,
+        clause: str = " HAVING ",
+        calculation_aliases: set[str] | None = None,
     ) -> str:
         if not having:
             return ""
 
-        aliases = {metric.output_name for metric in metrics}
+        calculation_aliases = calculation_aliases or set()
         operators = {
             HavingOperator.EQ: "=",
             HavingOperator.NEQ: "<>",
@@ -2873,9 +3079,16 @@ class QsoQuery:
                 raise InvalidQueryError(
                     f"Unknown aggregate having field: {condition.field}"
                 )
+            if condition.field in calculation_aliases and (
+                isinstance(condition.value, bool)
+                or not isinstance(condition.value, (int, float))
+            ):
+                raise InvalidQueryError(
+                    f"Aggregate calculation having value must be numeric: {condition.field}"
+                )
             parts.append(f'"{condition.field}" {operators[condition.op]} ?')
             parameters.append(condition.value)
-        return " HAVING " + " AND ".join(parts)
+        return clause + " AND ".join(parts)
 
     @staticmethod
     def _autovalue_join(columns: set[str]) -> str:

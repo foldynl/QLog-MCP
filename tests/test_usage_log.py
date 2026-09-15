@@ -52,6 +52,14 @@ async def test_logs_query_and_aggregate_without_values(qlog_database, tmp_path) 
                         "as": "country_bands",
                     },
                 ],
+                "calculations": [
+                    {
+                        "op": "divide",
+                        "left": "country_bands",
+                        "right": "qso_count",
+                        "as": "entity_density",
+                    }
+                ],
             },
         )
 
@@ -119,6 +127,14 @@ async def test_logs_query_and_aggregate_without_values(qlog_database, tmp_path) 
             "as": "country_bands",
             "fields": ["country", "band"],
         },
+    ]
+    assert aggregate["arguments"]["calculations"] == [
+        {
+            "op": "divide",
+            "left": "country_bands",
+            "right": "qso_count",
+            "as": "entity_density",
+        }
     ]
     assert "GROUP BY" in aggregate["sql"][0]["statement"]
     assert "600" not in aggregate["sql"][0]["statement"]
