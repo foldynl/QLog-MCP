@@ -718,18 +718,12 @@ def _autovalue_field(
     )
 
 
-def _membership_clubs_field(time_aware: bool) -> QsoField:
-    """Define a list of membership clubs for the contacted base callsign."""
+def _membership_club_clauses(time_aware: bool) -> list[str]:
+    """Build the shared membership match conditions for a contacted base callsign."""
     clauses = [
         'm."callsign" COLLATE NOCASE = a."base_callsign"',
         'NULLIF(TRIM(CAST(m."clubid" AS TEXT)), \'\') IS NOT NULL',
     ]
-    required_columns = (
-        "contacts_autovalue.contactid",
-        "contacts_autovalue.base_callsign",
-        "membership.callsign",
-        "membership.clubid",
-    )
     if time_aware:
         qso_date = 'DATE(c."start_time")'
         valid_from = 'TRIM(CAST(m."valid_from" AS TEXT))'
@@ -749,6 +743,19 @@ def _membership_clubs_field(time_aware: bool) -> QsoField:
                 ),
             )
         )
+    return clauses
+
+
+def _membership_clubs_field(time_aware: bool) -> QsoField:
+    """Define a list of membership clubs for the contacted base callsign."""
+    clauses = _membership_club_clauses(time_aware)
+    required_columns = (
+        "contacts_autovalue.contactid",
+        "contacts_autovalue.base_callsign",
+        "membership.callsign",
+        "membership.clubid",
+    )
+    if time_aware:
         required_columns += ("membership.valid_from", "membership.valid_to")
 
     return _field(
@@ -2649,6 +2656,21 @@ class QsoQuery:
                     )
                 requested = value
                 joiner = " OR " if operator == FilterOperator.HAS_ANY else " AND "
+
+            if operator == FilterOperator.HAS and condition.field in {
+                "member_clubs_at_qso_date",
+                "member_clubs_in_directory",
+            }:
+                parameters.append(_normalize_list_text(value))
+                clauses = _membership_club_clauses(
+                    condition.field == "member_clubs_at_qso_date"
+                )
+                clauses.append('UPPER(TRIM(CAST(m."clubid" AS TEXT))) = ?')
+                return (
+                    "EXISTS (SELECT 1 FROM membership AS m WHERE "
+                    + " AND ".join(f"({clause})" for clause in clauses)
+                    + ")"
+                )
 
             parameters.extend(requested)
             matches = [

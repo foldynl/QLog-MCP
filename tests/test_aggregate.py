@@ -1,5 +1,7 @@
 """Tests for server-side QSO aggregation."""
 
+import json
+
 import pytest
 from fastmcp import Client
 
@@ -331,6 +333,39 @@ async def test_membership_fields_distinguish_qso_date_from_directory_snapshot(
     ]
     assert malformed.data["rows"] == [{"qsos": 0}]
     assert directory.data["rows"] == [{"qsos": 1}]
+
+
+@pytest.mark.parametrize(
+    ("field", "club"),
+    [
+        ("member_clubs_at_qso_date", " time "),
+        ("member_clubs_in_directory", " broken "),
+    ],
+)
+async def test_membership_has_uses_direct_exists(
+    catalog_qlog_database, tmp_path, field, club
+) -> None:
+    usage_log = tmp_path / "usage.jsonl"
+    async with Client(create_server(catalog_qlog_database, usage_log)) as client:
+        result = await client.call_tool(
+            "qso.aggregate",
+            {
+                "scope": {"station_scope": "all"},
+                "filters": {
+                    "conditions": [{"field": field, "op": "has", "value": club}]
+                },
+                "group_by": [],
+                "metrics": [{"function": "count", "as": "qsos"}],
+            },
+        )
+
+    raw_log = usage_log.read_text()
+    statement = json.loads(raw_log)["sql"][0]["statement"]
+    assert result.data["rows"] == [{"qsos": 1}]
+    assert club.strip().upper() not in raw_log
+    assert "EXISTS (SELECT 1 FROM membership AS m WHERE" in statement
+    assert "GROUP_CONCAT" not in statement
+    assert "qlog_list_has" not in statement
 
 
 async def test_rejects_aggregate_function_not_supported_by_field(qlog_database) -> None:
