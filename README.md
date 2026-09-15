@@ -18,6 +18,7 @@ The server never changes, repairs, migrates, or creates a QLog database.
 Ask your AI assistant ordinary questions about your logbook, for example:
 
 - “Which DXCC entities did I work last year, and which have LoTW confirmation?”
+- “Which DXCC entities did I work on 20 m, but never on 15 m?”
 - “How did my CW activity change over the past six months?”
 - “Show my most recent QSO with each DXCC on 6 m.”
 - “Which POTA references in my log are absent from the current directory?”

@@ -30,8 +30,11 @@ from .qso import (
     LogScope,
     OnePerGroup,
     QsoQuery,
+    QsoSetSpec,
+    SetComparisonSort,
     SortSpec,
 )
+from .setops import SetRelation
 from .usage_log import UsageLoggingMiddleware
 
 
@@ -49,11 +52,13 @@ def create_server(
     server = FastMCP(
         name="QLog MCP",
         instructions=(
-            "Before the first qso.query or qso.aggregate call, use qlog.get_context and ask "
+            "Before the first qso.query, qso.aggregate, or qso.compare_sets call, use "
+            "qlog.get_context and ask "
             "the user to choose "
             "a station callsign (optionally a grid), a station profile, or all QSOs. Reuse the "
             "chosen scope until the user changes it. Use station_scope='all' only when the user "
-            "explicitly chooses all QSOs. Prefer qso.aggregate for statistical questions so "
+            "explicitly chooses all QSOs. Prefer qso.aggregate for statistical questions and "
+            "qso.compare_sets when a question compares keys from two QSO populations, so "
             "individual QSOs are not transferred. Call qlog.get_schema once for each domain "
             "when first needed and reuse that capability snapshot throughout the conversation. "
             "Do not call it before every operation; refresh it only after the MCP server or "
@@ -124,6 +129,7 @@ def create_server(
             "qso": {
                 "query": True,
                 "aggregate": True,
+                "compare_sets": True,
                 "fields": qso.supported_field_names(),
             },
             "catalog": {
@@ -524,6 +530,87 @@ def create_server(
         return await qso.query(
             scope, filters, fields, one_per_group, sort, limit, offset
         )
+
+    @server.tool(
+        name="qso.compare_sets",
+        description=(
+            "Compare distinct semantic keys from two independently scoped and filtered QSO "
+            "populations. Use this for set questions such as QSOs on one band but not another, "
+            "stations in both periods, or contacted versus logging-station references. It "
+            "returns aggregate evidence and never individual QSOs or contest/award decisions. "
+            "Read set_comparison in the QSO schema for compatible keys and result semantics."
+        ),
+    )
+    async def compare_sets(
+        left: Annotated[
+            QsoSetSpec,
+            Field(
+                description=(
+                    "Left QSO population: its required station scope, semantic key, and "
+                    "optional filters."
+                )
+            ),
+        ],
+        right: Annotated[
+            QsoSetSpec,
+            Field(
+                description=(
+                    "Right QSO population: its required station scope, semantic key, and "
+                    "optional filters."
+                )
+            ),
+        ],
+        relation: Annotated[
+            SetRelation,
+            Field(
+                description=(
+                    "Set relation to return: both is the intersection, left_only is left minus "
+                    "right, right_only is right minus left, and either is the union including "
+                    "keys present in both. It describes set membership only."
+                )
+            ),
+        ],
+        sort: Annotated[
+            list[SetComparisonSort] | None,
+            Field(
+                description=(
+                    "Returned key, per-side QSO counts, or per-side first/last QSO timestamps "
+                    "used for deterministic ordering. Omit for key ascending."
+                )
+            ),
+        ] = None,
+        limit: Annotated[
+            int,
+            Field(
+                ge=1,
+                le=1000,
+                description="Maximum number of comparison items to return, from 1 to 1000.",
+            ),
+        ] = 100,
+        offset: Annotated[
+            int,
+            Field(
+                ge=0,
+                description="Zero-based item offset; use page.next_offset for the next page.",
+            ),
+        ] = 0,
+    ) -> Annotated[
+        dict[str, Any],
+        Field(
+            description=(
+                "Object with relation; left and right key/effective_scope metadata; summary "
+                "counts named left_values, right_values, both_values, left_only_values, "
+                "right_only_values, and either_values; paginated items; and page metadata. "
+                "Summary values count distinct non-empty keys in the complete sets and are "
+                "unaffected by relation or pagination. Each item contains key, left_qso_count, "
+                "right_qso_count, and left/right first/last valid UTC QSO-start timestamps. "
+                "QSO counts count filtered QSOs containing the key, with a list item counted at "
+                "most once per QSO. A missing side has count zero and null timestamps. Page "
+                "contains limit, offset, returned, has_more, and next_offset."
+            )
+        ),
+    ]:
+        return await qso.compare_sets(left, right, relation, sort, limit, offset)
 
     @server.tool(
         name="qso.aggregate",

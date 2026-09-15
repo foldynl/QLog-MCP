@@ -26,6 +26,7 @@ from .filters import (
     compact_date_expression,
 )
 from .qso import LogScope, QsoQuery
+from .setops import SetRelation, compile_set_comparison
 from .usage_log import record_sql
 
 CatalogName = Literal[
@@ -716,11 +717,7 @@ class CatalogQuery:
             if key_field.value_type == "string":
                 key_expression = f"NULLIF(TRIM(CAST({key_expression} AS TEXT)), '')"
             key_collation = " COLLATE NOCASE" if key_field.value_type == "string" else ""
-            join_sql = (
-                'c."_key" COLLATE NOCASE = q."_key" COLLATE NOCASE'
-                if key_field.value_type == "string"
-                else 'c."_key" = q."_key"'
-            )
+            case_insensitive = key_field.value_type == "string"
 
             catalog_columns = ", ".join(
                 f'{resolved.fields[name].expression()} AS "{name}"'
@@ -742,21 +739,17 @@ class CatalogQuery:
                     f'SELECT MIN("_key") AS "_key", {grouped_columns} '
                     f'FROM "_catalog_rows" GROUP BY "_key"{key_collation})'
                 ),
-                (
-                    '"_matched_values" AS (SELECT c."_key" '
-                    'FROM "_catalog_values" AS c JOIN "_qso_values" AS q '
-                    f'ON {join_sql})'
+                *compile_set_comparison(
+                    "_catalog_values",
+                    "_qso_values",
+                    {
+                        MatchRelation.MATCHED: SetRelation.BOTH,
+                        MatchRelation.NOT_MATCHED: SetRelation.LEFT_ONLY,
+                        MatchRelation.QSO_ONLY: SetRelation.RIGHT_ONLY,
+                    }[relation],
+                    case_insensitive=case_insensitive,
                 ),
-                (
-                    '"_summary" AS ('
-                    'SELECT (SELECT COUNT(*) FROM "_catalog_values") AS "catalog_values", '
-                    '(SELECT COUNT(*) FROM "_matched_values") AS "matched_values", '
-                    '(SELECT COUNT(*) FROM "_catalog_values") - '
-                    '(SELECT COUNT(*) FROM "_matched_values") AS "not_matched_values", '
-                    '(SELECT COUNT(*) FROM "_qso_values") - '
-                    '(SELECT COUNT(*) FROM "_matched_values") AS "qso_only_values")'
-                ),
-                self._match_rows_cte(relation, catalog_names, join_sql),
+                self._match_rows_cte(relation, catalog_names, case_insensitive),
                 (
                     f'"_page" AS (SELECT * FROM "_relation_rows" ORDER BY {order_sql} '
                     'LIMIT ? OFFSET ?)'
@@ -794,10 +787,12 @@ class CatalogQuery:
             sql = (
                 "WITH RECURSIVE "
                 + ", ".join(ctes)
-                + ' SELECT s."catalog_values", s."matched_values", '
-                + 's."not_matched_values", s."qso_only_values", '
+                + ' SELECT s."left_values" AS "catalog_values", '
+                + 's."both_values" AS "matched_values", '
+                + 's."left_only_values" AS "not_matched_values", '
+                + 's."right_only_values" AS "qso_only_values", '
                 + f'p."_present" AS "_item_present", {item_columns} '
-                + f'FROM "_summary" AS s LEFT JOIN {item_source} AS p ON 1 = 1 '
+                + f'FROM "_set_summary" AS s LEFT JOIN {item_source} AS p ON 1 = 1 '
                 + f"ORDER BY {order_sql}"
             )
             rows = await self._execute_sql(connection, sql, parameters)
@@ -1134,25 +1129,27 @@ class CatalogQuery:
     def _match_rows_cte(
         relation: MatchRelation,
         selected_names: list[str],
-        join_sql: str,
+        case_insensitive: bool,
     ) -> str:
+        relation_key = 's."_key"'
+        catalog_key = 'c."_key"'
+        qso_key = 'q."_key"'
+        catalog_join = f"{relation_key} = {catalog_key}"
+        qso_join = f"{relation_key} = {qso_key}"
+        if case_insensitive:
+            catalog_join = f"{relation_key} COLLATE NOCASE = {catalog_key} COLLATE NOCASE"
+            qso_join = f"{relation_key} COLLATE NOCASE = {qso_key} COLLATE NOCASE"
         if relation == MatchRelation.QSO_ONLY:
             return (
                 '"_relation_rows" AS (SELECT 1 AS "_present", q."_key" AS "key", '
-                'q."_qso_count" AS "qso_count" FROM "_qso_values" AS q '
-                f'LEFT JOIN "_matched_values" AS c ON {join_sql} WHERE c."_key" IS NULL)'
+                'q."_qso_count" AS "qso_count" FROM "_set_relation_values" AS s '
+                f'JOIN "_qso_values" AS q ON {qso_join})'
             )
         columns = ", ".join(f'c."{name}" AS "{name}"' for name in selected_names)
-        if relation == MatchRelation.MATCHED:
-            return (
-                f'"_relation_rows" AS (SELECT 1 AS "_present", c."_key", {columns} '
-                'FROM "_matched_values" AS q JOIN "_catalog_values" AS c '
-                f'ON {join_sql})'
-            )
         return (
             f'"_relation_rows" AS (SELECT 1 AS "_present", c."_key", {columns} '
-            'FROM "_catalog_values" AS c LEFT JOIN "_matched_values" AS q '
-            f'ON {join_sql} WHERE q."_key" IS NULL)'
+            'FROM "_set_relation_values" AS s JOIN "_catalog_values" AS c '
+            f'ON {catalog_join})'
         )
 
     @staticmethod

@@ -19,6 +19,7 @@ For most questions, use this sequence:
 2. Call `qlog.get_schema` for the QSO or catalog domain and select only advertised fields,
    operators, mappings, and aggregate functions.
 3. Use `qso.aggregate` for counts, trends, distinct entities, and other summaries. Use
+   `qso.compare_sets` for keys present in one or both of two QSO populations. Use
    `qso.query` only when the actual QSO rows are needed as evidence.
 4. Use `catalog.query` to enrich known references with directory names and metadata, or
    `catalog.match_qso` to calculate matched, missing, and QSO-only sets without moving
@@ -27,6 +28,31 @@ For most questions, use this sequence:
    any limitations in the answer.
 
 The examples below are building blocks, not ready-made award calculators.
+
+## DXCC worked on 20 m but never on 15 m
+
+This is a direct comparison of two QSO populations with the same semantic key. It needs
+one server-side set operation rather than two aggregations and client-side pagination:
+
+```json
+{
+  "left": {
+    "scope": {"station_scope": "all"},
+    "key": "dxcc",
+    "filters": {"conditions": [{"field": "band", "op": "eq", "value": "20m"}]}
+  },
+  "right": {
+    "scope": {"station_scope": "all"},
+    "key": "dxcc",
+    "filters": {"conditions": [{"field": "band", "op": "eq", "value": "15m"}]}
+  },
+  "relation": "left_only"
+}
+```
+
+Each result includes the QSO count and first/last QSO on both sides. The relation says
+only that a DXCC key occurs in one filtered population and not the other; it does not
+interpret award status.
 
 ## DXCC entities absent from selected confirmations
 
@@ -65,32 +91,21 @@ contacts to come from one entity.
 
 ## POTA contacted and logging-side references
 
-POTA references may contain multiple comma-delimited items. Compare `pota_ref` for the
-contacted station and `my_pota_ref` for the logging station in separate calls:
+POTA references may contain multiple comma-delimited items. The QSO schema declares
+`pota_ref` and `my_pota_ref` as semantic counterparts, so one comparison can return parks
+worked as a hunter but never recorded on the logging-station side:
 
 ```json
 {
-  "catalog": "pota",
-  "qso_field": "pota_ref",
-  "scope": {"station_scope": "all"},
-  "relation": "matched",
-  "fields": ["reference", "name", "location"]
+  "left": {"scope": {"station_scope": "all"}, "key": "pota_ref"},
+  "right": {"scope": {"station_scope": "all"}, "key": "my_pota_ref"},
+  "relation": "left_only"
 }
 ```
 
-```json
-{
-  "catalog": "pota",
-  "qso_field": "my_pota_ref",
-  "scope": {"station_scope": "all"},
-  "relation": "matched",
-  "fields": ["reference", "name", "location"]
-}
-```
-
-Each comma-delimited park is matched separately. The two summaries can therefore answer
-“contacted parks versus parks from which I logged” without downloading the QSOs. Any
-activation threshold still comes from external POTA rules and needs `qso.aggregate`.
+Each comma-delimited park is normalized and compared separately. Use `catalog.query` with
+the returned references when names and locations are needed. Any activation threshold
+still comes from external POTA rules and needs `qso.aggregate`.
 
 ## SOTA activity followed by catalog enrichment
 

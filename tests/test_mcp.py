@@ -16,6 +16,7 @@ EXPECTED_TOOLS = {
     "qlog.get_capabilities",
     "qlog.get_schema",
     "qso.aggregate",
+    "qso.compare_sets",
     "qso.query",
 }
 
@@ -59,6 +60,7 @@ async def test_public_tool_schemas_are_described() -> None:
     tools = {tool.name: tool for tool in await server.list_tools()}
     query = tools["qso.query"]
     aggregate = tools["qso.aggregate"]
+    compare_sets = tools["qso.compare_sets"]
     catalog = tools["catalog.query"]
     catalog_match = tools["catalog.match_qso"]
     membership_match = tools["membership.match_qso"]
@@ -81,12 +83,35 @@ async def test_public_tool_schemas_are_described() -> None:
         "description"
     ]
     assert "truncated=true" in aggregate.output_schema["description"]
+    assert "unaffected by relation or pagination" in compare_sets.output_schema[
+        "description"
+    ]
+    assert "distinct non-empty keys" in compare_sets.output_schema["description"]
+    assert "at most once per QSO" in compare_sets.output_schema["description"]
     assert all(
         parameter.get("description")
         for parameter in query.parameters["properties"].values()
     )
     assert query.parameters["properties"]["limit"]["minimum"] == 1
     assert query.parameters["properties"]["limit"]["maximum"] == 1000
+    assert set(compare_sets.parameters["required"]) == {"left", "right", "relation"}
+    assert set(compare_sets.parameters["$defs"]["SetRelation"]["enum"]) == {
+        "both",
+        "left_only",
+        "right_only",
+        "either",
+    }
+    assert "intersection" in compare_sets.parameters["properties"]["relation"][
+        "description"
+    ]
+    assert "union including" in compare_sets.parameters["properties"]["relation"][
+        "description"
+    ]
+    assert "set_comparison.key_fields" in compare_sets.parameters["$defs"][
+        "QsoSetSpec"
+    ]["properties"]["key"]["description"]
+    assert compare_sets.parameters["properties"]["limit"]["minimum"] == 1
+    assert compare_sets.parameters["properties"]["limit"]["maximum"] == 1000
     assert tools["qlog.get_schema"].parameters["properties"]["domain"]["description"]
     assert "once per needed domain" in tools["qlog.get_schema"].description
     assert "Do not call it before every operation" in server.instructions
@@ -156,6 +181,7 @@ async def test_capabilities_tool_through_mcp_client() -> None:
     assert result.data["stage"] == "qso-query"
     assert result.data["qso"]["query"] is True
     assert result.data["qso"]["aggregate"] is True
+    assert result.data["qso"]["compare_sets"] is True
     assert result.data["catalog"] == {
         "query": True,
         "match_qso": True,
@@ -209,6 +235,34 @@ async def test_qlog_context_and_qso_schema(qlog_database) -> None:
     ]
     assert schema.data["qso"]["fields"]["country"]["aggregate_functions"] == [
         "distinct_count"
+    ]
+    assert set(schema.data["qso"]["set_comparison"]["relations"]) == {
+        "both",
+        "left_only",
+        "right_only",
+        "either",
+    }
+    assert "dxcc" in schema.data["qso"]["set_comparison"]["key_fields"]
+    assert "extra_fields" not in schema.data["qso"]["set_comparison"]["key_fields"]
+    assert set(schema.data["qso"]["set_comparison"]["result_fields"]) == {
+        "relation",
+        "left",
+        "right",
+        "summary",
+        "items",
+        "page",
+    }
+    assert "Distinct non-empty keys" in schema.data["qso"]["set_comparison"][
+        "summary_fields"
+    ]["left_values"]
+    assert "Filtered left-side QSOs" in schema.data["qso"]["set_comparison"][
+        "item_fields"
+    ]["left_qso_count"]
+    assert "UTC QSO-start timestamp" in schema.data["qso"]["set_comparison"][
+        "item_fields"
+    ]["right_last_qso"]
+    assert "next page" in schema.data["qso"]["set_comparison"]["page_fields"][
+        "next_offset"
     ]
     assert schema.data["qso"]["aggregation"]["group_by"]["all_fields"] is True
     assert schema.data["qso"]["aggregation"]["group_by"]["bucket_intervals"] == [

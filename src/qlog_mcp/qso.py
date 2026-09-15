@@ -29,6 +29,7 @@ from .filters import (
     SortDirection,
     compact_date_expression,
 )
+from .setops import SET_RELATION_DESCRIPTIONS, SetRelation, compile_set_comparison
 from .usage_log import record_sql
 
 FieldCardinality = Literal["one", "many"]
@@ -186,6 +187,27 @@ class LogScope(BaseModel):
         return self
 
 
+class QsoSetSpec(BaseModel):
+    """One scoped and filtered QSO population reduced to semantic keys."""
+
+    scope: LogScope = Field(
+        description="Required station selection and optional date/operator limits for this set."
+    )
+    key: str = Field(
+        min_length=1,
+        description=(
+            "Semantic field advertised by qlog.get_schema(domain='qso') under "
+            "set_comparison.key_fields. Its distinct non-null, non-blank values form this "
+            "set; text keys compare case-insensitively. List-valued fields contribute "
+            "normalized individual items, each counted at most once per QSO."
+        ),
+    )
+    filters: FilterGroup | None = Field(
+        default=None,
+        description="Optional nested QSO filters defining this set's population.",
+    )
+
+
 class SortSpec(BaseModel):
     """One semantic field used to order individual QSOs."""
 
@@ -195,6 +217,32 @@ class SortSpec(BaseModel):
     direction: SortDirection = Field(
         default=SortDirection.ASC,
         description="Sort direction for this field.",
+    )
+
+
+SetComparisonSortField = Literal[
+    "key",
+    "left_qso_count",
+    "right_qso_count",
+    "left_first_qso",
+    "left_last_qso",
+    "right_first_qso",
+    "right_last_qso",
+]
+
+
+class SetComparisonSort(BaseModel):
+    """One result field used to order a QSO set comparison."""
+
+    field: SetComparisonSortField = Field(
+        description=(
+            "Returned key, per-side QSO count, or per-side first/last UTC QSO-start "
+            "timestamp used for ordering."
+        )
+    )
+    direction: SortDirection = Field(
+        default=SortDirection.ASC,
+        description="Sort direction for this comparison result field.",
     )
 
 
@@ -1251,8 +1299,11 @@ class QsoQuery:
         scope: LogScope,
         filters: FilterGroup | None,
         field_name: str,
+        namespace: Literal["qso", "left", "right"] = "qso",
+        *,
+        include_time_bounds: bool = False,
     ) -> tuple[list[str], list[Any]]:
-        """Compile CTEs containing distinct QSO field values and their QSO counts."""
+        """Compile distinct QSO values and counts, optionally with time bounds."""
         columns, source, where_sql, parameters = await self.compile_scoped_source(
             connection, scope, filters
         )
@@ -1264,32 +1315,48 @@ class QsoQuery:
                 f"QSO field {field_name!r} is unavailable in this QLog database schema"
             )
 
-        value = self._query_field(field_name, columns).base_expression()
+        value = self._query_field(field_name, columns).select_expression()
+        qso_time = (
+            self._query_field("datetime", columns).select_expression()
+            if include_time_bounds
+            else "NULL"
+        )
+        time_bounds = (
+            ', MIN("_datetime") AS "_first_qso", MAX("_datetime") AS "_last_qso"'
+            if include_time_bounds
+            else ""
+        )
+        prefix = f"_{namespace}"
 
         if field.cardinality == "many":
             ctes = [
                 (
-                    '"_qso_rows" AS ('
+                    f'"{prefix}_rows" AS ('
                     'SELECT c."id" AS "_contact_id", '
+                    f'{qso_time} AS "_datetime", '
                     f"qlog_list_values('{field_name}', {value}) || char(31) AS \"_rest\" "
                     f"FROM {source} WHERE {where_sql})"
                 ),
                 (
-                    '"_qso_split"("_contact_id", "_rest", "_key") AS ('
-                    'SELECT "_contact_id", "_rest", NULL FROM "_qso_rows" UNION ALL '
-                    'SELECT "_contact_id", substr("_rest", instr("_rest", char(31)) + 1), '
+                    f'"{prefix}_split"("_contact_id", "_datetime", "_rest", "_key") AS ('
+                    f'SELECT "_contact_id", "_datetime", "_rest", NULL FROM "{prefix}_rows" '
+                    "UNION ALL "
+                    'SELECT "_contact_id", "_datetime", '
+                    'substr("_rest", instr("_rest", char(31)) + 1), '
                     'substr("_rest", 1, instr("_rest", char(31)) - 1) '
-                    'FROM "_qso_split" WHERE "_rest" <> \'\')'
+                    f'FROM "{prefix}_split" WHERE "_rest" <> \'\')'
                 ),
                 (
-                    '"_qso_items" AS ('
-                    'SELECT DISTINCT "_contact_id", "_key" FROM "_qso_split" '
+                    f'"{prefix}_items" AS ('
+                    'SELECT DISTINCT "_contact_id", "_datetime", "_key" '
+                    f'FROM "{prefix}_split" '
                     'WHERE NULLIF(TRIM(CAST("_key" AS TEXT)), \'\') IS NOT NULL)'
                 ),
                 (
-                    '"_qso_values" AS ('
-                    'SELECT MIN("_key") AS "_key", COUNT(*) AS "_qso_count" '
-                    'FROM "_qso_items" GROUP BY "_key" COLLATE NOCASE)'
+                    f'"{prefix}_values" AS ('
+                    'SELECT MIN("_key") AS "_key", COUNT(*) AS "_qso_count"'
+                    f"{time_bounds} "
+                    f'FROM "{prefix}_items" GROUP BY "_key" COLLATE NOCASE)'
                 ),
             ]
             return ctes, parameters
@@ -1302,18 +1369,153 @@ class QsoQuery:
         collation = " COLLATE NOCASE" if field.value_type == "string" else ""
         return [
             (
-                '"_qso_rows" AS ('
+                f'"{prefix}_rows" AS ('
                 'SELECT c."id" AS "_contact_id", '
-                f'{key} AS "_key" FROM {source} WHERE {where_sql})'
+                f'{qso_time} AS "_datetime", {key} AS "_key" '
+                f"FROM {source} WHERE {where_sql})"
             ),
             (
-                '"_qso_values" AS ('
-                'SELECT MIN("_key") AS "_key", COUNT(*) AS "_qso_count" '
-                'FROM "_qso_rows" '
+                f'"{prefix}_values" AS ('
+                'SELECT MIN("_key") AS "_key", COUNT(*) AS "_qso_count"'
+                f"{time_bounds} "
+                f'FROM "{prefix}_rows" '
                 'WHERE NULLIF(TRIM(CAST("_key" AS TEXT)), \'\') IS NOT NULL '
                 f'GROUP BY "_key"{collation})'
             ),
         ], parameters
+
+    async def compare_sets(
+        self,
+        left: QsoSetSpec,
+        right: QsoSetSpec,
+        relation: SetRelation,
+        sort: list[SetComparisonSort] | None,
+        limit: int,
+        offset: int,
+    ) -> dict[str, Any]:
+        """Compare two independently scoped and filtered QSO value sets."""
+        self._validate_page(limit, offset)
+        relation = SetRelation(relation)
+        left_field, _ = self._validate_set_keys(left.key, right.key)
+
+        async with self.database.connect() as connection:
+            left_ctes, left_parameters = await self.compile_value_set(
+                connection,
+                left.scope,
+                left.filters,
+                left.key,
+                "left",
+                include_time_bounds=True,
+            )
+            right_ctes, right_parameters = await self.compile_value_set(
+                connection,
+                right.scope,
+                right.filters,
+                right.key,
+                "right",
+                include_time_bounds=True,
+            )
+            case_insensitive = left_field.value_type == "string"
+            ctes = [
+                *left_ctes,
+                *right_ctes,
+                *compile_set_comparison(
+                    "_left_values",
+                    "_right_values",
+                    relation,
+                    case_insensitive=case_insensitive,
+                ),
+            ]
+            left_join = self._set_key_equality(
+                "s", "l", case_insensitive=case_insensitive
+            )
+            right_join = self._set_key_equality(
+                "s", "r", case_insensitive=case_insensitive
+            )
+            order_sql = self._compile_set_comparison_sort(sort, case_insensitive)
+            ctes.extend(
+                (
+                    (
+                        '"_set_details" AS (SELECT 1 AS "_present", '
+                        's."_key" AS "key", '
+                        'COALESCE(l."_qso_count", 0) AS "left_qso_count", '
+                        'COALESCE(r."_qso_count", 0) AS "right_qso_count", '
+                        'l."_first_qso" AS "left_first_qso", '
+                        'l."_last_qso" AS "left_last_qso", '
+                        'r."_first_qso" AS "right_first_qso", '
+                        'r."_last_qso" AS "right_last_qso" '
+                        'FROM "_set_relation_values" AS s '
+                        f'LEFT JOIN "_left_values" AS l ON {left_join} '
+                        f'LEFT JOIN "_right_values" AS r ON {right_join})'
+                    ),
+                    (
+                        f'"_page" AS (SELECT * FROM "_set_details" ORDER BY {order_sql} '
+                        "LIMIT ? OFFSET ?)"
+                    ),
+                )
+            )
+            sql = (
+                "WITH RECURSIVE "
+                + ", ".join(ctes)
+                + ' SELECT s.*, p."_present", p."key", '
+                + 'p."left_qso_count", p."right_qso_count", '
+                + 'p."left_first_qso", p."left_last_qso", '
+                + 'p."right_first_qso", p."right_last_qso" '
+                + 'FROM "_set_summary" AS s LEFT JOIN "_page" AS p ON 1 = 1 '
+                + f"ORDER BY {order_sql}"
+            )
+            parameters = [*left_parameters, *right_parameters, limit + 1, offset]
+            rows = await self._execute_sql(connection, sql, parameters)
+
+        detail_rows = [row for row in rows if row["_present"] is not None]
+        has_more = len(detail_rows) > limit
+        items = [
+            {
+                "key": self._serialize_set_key(row["key"], left_field),
+                "left_qso_count": row["left_qso_count"],
+                "right_qso_count": row["right_qso_count"],
+                "left_first_qso": row["left_first_qso"],
+                "left_last_qso": row["left_last_qso"],
+                "right_first_qso": row["right_first_qso"],
+                "right_last_qso": row["right_last_qso"],
+            }
+            for row in detail_rows[:limit]
+        ]
+        summary = rows[0]
+        return {
+            "relation": relation.value,
+            "left": {
+                "key": left.key,
+                "effective_scope": left.scope.model_dump(
+                    mode="json", exclude_defaults=True, exclude_none=True
+                ),
+            },
+            "right": {
+                "key": right.key,
+                "effective_scope": right.scope.model_dump(
+                    mode="json", exclude_defaults=True, exclude_none=True
+                ),
+            },
+            "summary": {
+                name: summary[name]
+                for name in (
+                    "left_values",
+                    "right_values",
+                    "both_values",
+                    "left_only_values",
+                    "right_only_values",
+                    "either_values",
+                )
+            },
+            "items": items,
+            "page": {
+                "limit": limit,
+                "offset": offset,
+                "returned": len(items),
+                "has_more": has_more,
+                "next_offset": offset + limit if has_more else None,
+            },
+        }
 
     async def compile_scoped_source(
         self,
@@ -1386,6 +1588,9 @@ class QsoQuery:
             }
             for name, field in available_fields.items()
         }
+        set_key_fields = [
+            name for name, field in available_fields.items() if field.value_type != "object"
+        ]
         return {
             "fields": fields,
             "default_fields": [name for name in DEFAULT_FIELDS if name in fields],
@@ -1433,6 +1638,83 @@ class QsoQuery:
                     "Malformed items remain available as trimmed exact items. Use contains "
                     "only as an explicit diagnostic fallback for inconsistent legacy data."
                 ),
+            },
+            "set_comparison": {
+                "relations": {
+                    relation.value: SET_RELATION_DESCRIPTIONS[relation]
+                    for relation in SetRelation
+                },
+                "key_fields": set_key_fields,
+                "compatible_keys": (
+                    "The two keys must be the same semantic field, a declared contacted/"
+                    "logging counterpart, or list fields with the same semantic item type."
+                ),
+                "list_values": (
+                    "List-valued keys are compared as normalized individual items and count "
+                    "each item at most once per QSO."
+                ),
+                "result_fields": {
+                    "relation": "The requested set relation used to select items.",
+                    "left": "Left key and the station/date/operator scope applied to it.",
+                    "right": "Right key and the station/date/operator scope applied to it.",
+                    "summary": "Complete distinct-key counts, unaffected by pagination.",
+                    "items": "Keys in the requested relation with per-side QSO evidence.",
+                    "page": "Deterministic offset-pagination metadata for items only.",
+                },
+                "side_fields": {
+                    "key": "Semantic QSO field used to form this side's value set.",
+                    "effective_scope": "Station/date/operator scope applied to this side.",
+                },
+                "summary_fields": {
+                    "left_values": "Distinct non-empty keys in the complete left set.",
+                    "right_values": "Distinct non-empty keys in the complete right set.",
+                    "both_values": "Distinct keys present in both complete sets.",
+                    "left_only_values": "Distinct keys present only in the complete left set.",
+                    "right_only_values": (
+                        "Distinct keys present only in the complete right set."
+                    ),
+                    "either_values": (
+                        "Distinct keys in the union of both complete sets, including keys "
+                        "present in both."
+                    ),
+                },
+                "item_fields": {
+                    "key": "One distinct non-empty key selected by the requested relation.",
+                    "left_qso_count": (
+                        "Filtered left-side QSOs containing this key; a list item counts at "
+                        "most once per QSO."
+                    ),
+                    "right_qso_count": (
+                        "Filtered right-side QSOs containing this key; a list item counts at "
+                        "most once per QSO."
+                    ),
+                    "left_first_qso": (
+                        "Earliest valid UTC QSO-start timestamp for this key on the left, or "
+                        "null when unavailable."
+                    ),
+                    "left_last_qso": (
+                        "Latest valid UTC QSO-start timestamp for this key on the left, or "
+                        "null when unavailable."
+                    ),
+                    "right_first_qso": (
+                        "Earliest valid UTC QSO-start timestamp for this key on the right, or "
+                        "null when unavailable."
+                    ),
+                    "right_last_qso": (
+                        "Latest valid UTC QSO-start timestamp for this key on the right, or "
+                        "null when unavailable."
+                    ),
+                },
+                "page_fields": {
+                    "limit": "Requested maximum number of items.",
+                    "offset": "Zero-based offset into relation items.",
+                    "returned": "Items returned on this page.",
+                    "has_more": "Whether another item page exists.",
+                    "next_offset": "Offset for the next page, or null when this is the last.",
+                },
+                "default_limit": 100,
+                "max_limit": 1000,
+                "default_order": "key ascending",
             },
             "aggregation": {
                 "processing_order": [
@@ -1980,6 +2262,76 @@ class QsoQuery:
             raise InvalidQueryError("limit must be between 1 and 1000")
         if offset < 0:
             raise InvalidQueryError("offset must be zero or greater")
+
+    @staticmethod
+    def _validate_set_keys(
+        left_name: str, right_name: str
+    ) -> tuple[QsoField, QsoField]:
+        fields: list[QsoField] = []
+        for name in (left_name, right_name):
+            field = QSO_FIELDS.get(name)
+            if field is None:
+                raise InvalidQueryError(f"Unknown QSO set key: {name}")
+            if field.value_type == "object":
+                raise InvalidQueryError(f"QSO field {name!r} cannot be used as a set key")
+            fields.append(field)
+
+        left_field, right_field = fields
+        same_field = left_name == right_name
+        paired_fields = (
+            left_field.paired_field == right_name
+            or right_field.paired_field == left_name
+        )
+        same_item_type = (
+            left_field.item_type is not None
+            and left_field.item_type == right_field.item_type
+        )
+        if not (same_field or paired_fields or same_item_type):
+            raise InvalidQueryError(
+                f"Incompatible QSO set keys: {left_name!r} and {right_name!r}"
+            )
+        if (
+            left_field.value_type != right_field.value_type
+            or left_field.cardinality != right_field.cardinality
+        ):
+            raise InvalidQueryError(
+                f"Incompatible QSO set keys: {left_name!r} and {right_name!r}"
+            )
+        return left_field, right_field
+
+    @staticmethod
+    def _set_key_equality(
+        left_alias: str, right_alias: str, *, case_insensitive: bool
+    ) -> str:
+        left = f'{left_alias}."_key"'
+        right = f'{right_alias}."_key"'
+        if case_insensitive:
+            return f"{left} COLLATE NOCASE = {right} COLLATE NOCASE"
+        return f"{left} = {right}"
+
+    @staticmethod
+    def _compile_set_comparison_sort(
+        sort: list[SetComparisonSort] | None, case_insensitive: bool
+    ) -> str:
+        requested = sort or [SetComparisonSort(field="key")]
+        parts: list[str] = []
+        sorted_fields: set[str] = set()
+        for item in requested:
+            if item.field in sorted_fields:
+                continue
+            collation = " COLLATE NOCASE" if item.field == "key" and case_insensitive else ""
+            parts.append(
+                f'"{item.field}"{collation} {item.direction.value.upper()}'
+            )
+            sorted_fields.add(item.field)
+        if "key" not in sorted_fields:
+            collation = " COLLATE NOCASE" if case_insensitive else ""
+            parts.append(f'"key"{collation} ASC')
+        return ", ".join(parts)
+
+    @staticmethod
+    def _serialize_set_key(value: Any, field: QsoField) -> Any:
+        return bool(value) if field.value_type == "boolean" else value
 
     @staticmethod
     def _resolve_fields(fields: list[str] | None, columns: set[str]) -> list[str]:

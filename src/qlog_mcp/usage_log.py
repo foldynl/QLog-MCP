@@ -158,6 +158,15 @@ class UsageLoggingMiddleware(Middleware):
                 "order_by": cls._summarize_sort(arguments.get("order_by")),
                 "limit": cls._integer(arguments.get("limit"), 100),
             }
+        if tool == "qso.compare_sets":
+            return {
+                "left": cls._summarize_qso_set(arguments.get("left")),
+                "right": cls._summarize_qso_set(arguments.get("right")),
+                "relation": cls._identifier(arguments.get("relation")),
+                "sort": cls._summarize_sort(arguments.get("sort")),
+                "limit": cls._integer(arguments.get("limit"), 100),
+                "offset": cls._integer(arguments.get("offset"), 0),
+            }
         if tool == "catalog.query":
             return {
                 "catalog": cls._identifier(arguments.get("catalog")),
@@ -199,6 +208,16 @@ class UsageLoggingMiddleware(Middleware):
             "station_profile_count": cls._length(value.get("station_profile_names")),
             "has_date_from": value.get("date_from") is not None,
             "has_date_to": value.get("date_to") is not None,
+        }
+
+    @classmethod
+    def _summarize_qso_set(cls, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        return {
+            "scope": cls._summarize_scope(value.get("scope")),
+            "key": cls._identifier(value.get("key")),
+            "filters": cls._summarize_filters(value.get("filters")),
         }
 
     @classmethod
@@ -354,6 +373,12 @@ class UsageLoggingMiddleware(Middleware):
                         "matched_values",
                         "not_matched_values",
                         "qso_only_values",
+                        "left_values",
+                        "right_values",
+                        "both_values",
+                        "left_only_values",
+                        "right_only_values",
+                        "either_values",
                     )
                     if isinstance(data["summary"].get(name), int)
                 }

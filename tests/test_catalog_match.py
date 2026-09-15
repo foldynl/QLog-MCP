@@ -392,6 +392,8 @@ async def test_usage_log_keeps_match_values_private_and_records_one_sql(
     assert len(event["sql"]) == 1
     assert event["sql"][0]["statement"].startswith("WITH RECURSIVE ")
     assert "Yellowstone" not in event["sql"][0]["statement"]
+    assert '"_first_qso"' not in event["sql"][0]["statement"]
+    assert '"_last_qso"' not in event["sql"][0]["statement"]
     assert event["result"]["set_counts"] == {
         "catalog_values": 2,
         "matched_values": 1,

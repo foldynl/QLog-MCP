@@ -14,11 +14,12 @@ MCP client
     v
 server.py (FastMCP tools, public contract, lazy construction)
     |
-    +--> qso.py -----------+
-    |                       |
-    +--> catalog.py --------+--> database.py --> QLog SQLite (read-only)
-              |
-              +--> qso.py (scoped semantic key set for catalog.match_qso)
+    +--> qso.py -----------------------> database.py --> QLog SQLite (read-only)
+    |       +--> setops.py
+    |
+    +--> catalog.py -------------------> database.py
+    |       +--> qso.py (scoped semantic key set for catalog.match_qso)
+    |       +--> setops.py
     |
     +--> usage_log.py (optional redacted middleware)
 ```
@@ -29,8 +30,9 @@ The normal lifecycle is:
    operators, and profiles. This is the information needed to choose a scope.
 2. `qlog.get_schema` describes the semantic fields and operations available in the
    current database. The snapshot is reusable for the connection.
-3. `qso.query` or `qso.aggregate` compiles a scoped QSO request. Aggregation stays in
-   SQLite, so summaries do not transfer the complete log.
+3. `qso.query`, `qso.aggregate`, or `qso.compare_sets` compiles a scoped QSO request.
+   Aggregation and set comparison stay in SQLite, so summaries do not transfer the
+   complete log.
 4. `catalog.query` reads reference-directory facts, while `catalog.match_qso` compares
    a filtered catalog key set with a filtered QSO key set.
 5. The assistant applies any external award, activity, or contest rules to those facts.
@@ -40,8 +42,9 @@ The normal lifecycle is:
 | Module | Responsibility | Deliberately does not do |
 | --- | --- | --- |
 | `server.py` | FastMCP construction, tool names, descriptions, and dependency wiring | Open the database during startup or implement query logic |
-| `qso.py` | QSO scope, semantic field registry, validation, SQL expressions, querying, aggregation | Expose physical SQLite names to clients |
+| `qso.py` | QSO scope, semantic field registry, validation, SQL expressions, querying, aggregation, and QSO value sets | Expose physical SQLite names to clients |
 | `catalog.py` | Catalog capability detection, catalog fields, catalog queries, and neutral set comparison | Decide whether a set is an award or contest result |
+| `setops.py` | SQL composition for relations and complete summaries between two validated value sets | Define scopes, fields, catalog rules, or public tools |
 | `filters.py` | Shared nested filter models and operator vocabulary | Interpret domain-specific award rules |
 | `database.py` | Lazy SQLite connections in read-only mode | Migrate, repair, write, or create a QLog database |
 | `discovery.py` | CLI, environment, and QLog discovery-file precedence | Reimplement QLog's platform path logic |
@@ -67,10 +70,11 @@ The optional `contacts_autovalue` table is read through a one-to-one relationshi
 available columns before each operation, which lets the advertised capability surface
 follow QLog schema evolution instead of hard-coding a QLog application release.
 
-`catalog.match_qso` asks `qso.py` to compile the complete scoped and filtered QSO key
-set. `catalog.py` then compares that CTE with the filtered catalog in one SQLite
-statement and calculates set summaries and pagination. The result is a neutral relation
-such as “matched” or “not matched”; it is not an award decision.
+`qso.compare_sets` asks `qso.py` to compile two complete scoped and filtered QSO key sets.
+`catalog.match_qso` compiles one catalog set and asks `qso.py` for the other. Both paths
+use the small `setops.py` SQL composer for set relations and complete summary counts, then
+add their domain-specific detail rows and pagination. Results such as “left only” or
+“matched” are neutral relations, not award or contest decisions.
 
 ## Source layout
 
@@ -79,6 +83,7 @@ src/qlog_mcp/
 ├── server.py
 ├── qso.py
 ├── catalog.py
+├── setops.py
 ├── filters.py
 ├── database.py
 ├── discovery.py

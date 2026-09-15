@@ -12,11 +12,12 @@ This page is the precise tool contract. For the user-oriented view, start with t
 | Learn what this server/database can support | `qlog.get_capabilities`, `qlog.get_schema` | Separates server features from fields available in this database |
 | Inspect one or a small page of actual QSOs | `qso.query` | Returns selected semantic fields with filters, sorting, and pagination |
 | Count or compare many QSOs | `qso.aggregate` | Calculates metrics in SQLite and returns aggregate rows only |
+| Compare keys from two QSO populations | `qso.compare_sets` | Performs set algebra and per-side QSO summaries in SQLite |
 | Look up a directory entry | `catalog.query` | Returns directory facts, not award decisions |
 | Find catalog entries present or absent in the log | `catalog.match_qso` | Compares distinct semantic keys without returning QSO content |
 | Compare a downloaded club roster with QSOs | `membership.match_qso` | Uses each QSO date |
 
-The eight public tools are:
+The nine public tools are:
 
 - `qlog.get_context`
 - `qlog.get_capabilities`
@@ -25,6 +26,7 @@ The eight public tools are:
 - `catalog.match_qso`
 - `membership.match_qso`
 - `qso.aggregate`
+- `qso.compare_sets`
 - `qso.query`
 
 ## The contract in one minute
@@ -35,7 +37,8 @@ that choice. It calls `qlog.get_schema` once per needed domain, constructs reque
 from the advertised semantic fields and operators, and refreshes the snapshot after a
 database/server change or compatibility error.
 
-Use `qso.aggregate` by default for statistics. Use `qso.query` when the user needs the
+Use `qso.aggregate` by default for statistics and `qso.compare_sets` when the question
+compares distinct keys from two QSO populations. Use `qso.query` when the user needs the
 actual contact rows, a last/first record, or evidence for a summary. Catalog results are
 reference facts. They do not mean “worked”, “confirmed”, “needed”, “valid”, or “award
 credit” until the caller applies the relevant external rules.
@@ -45,6 +48,49 @@ fields and operations without exposing the physical SQLite schema. Call each nee
 once per server connection and reuse the result. Refresh it only after the server or database
 changes, or when a compatibility error indicates that the stored capability snapshot may be
 stale.
+
+## QSO set comparison
+
+`qso.compare_sets` reduces two independently scoped and filtered QSO populations to
+distinct semantic keys and compares them in one SQLite statement. Each `left` and `right`
+object contains its own required `scope`, one `key`, and optional nested `filters`. Use
+`both`, `left_only`, `right_only`, or `either` as the relation.
+
+For example, this returns every DXCC worked on 20 m but never on 15 m in the selected log:
+
+```json
+{
+  "left": {
+    "scope": {"station_scope": "all"},
+    "key": "dxcc",
+    "filters": {"conditions": [{"field": "band", "op": "eq", "value": "20m"}]}
+  },
+  "right": {
+    "scope": {"station_scope": "all"},
+    "key": "dxcc",
+    "filters": {"conditions": [{"field": "band", "op": "eq", "value": "15m"}]}
+  },
+  "relation": "left_only"
+}
+```
+
+The keys must be the same semantic field, a declared contacted/logging counterpart such
+as `pota_ref` and `my_pota_ref`, or list fields with the same semantic item type. This
+prevents accidental comparisons between unrelated strings while allowing hunter versus
+activator and other side-aware questions. List keys are normalized and exploded into
+individual items; duplicate equal items in one QSO count once. Null, empty, and
+whitespace-only keys are ignored, and text keys compare case-insensitively.
+
+Every item contains `key`, `left_qso_count`, `right_qso_count`, and the first/last QSO UTC
+timestamp for each side. A missing side has count zero and null timestamps. The complete
+summary always reports `left_values`, `right_values`, `both_values`, `left_only_values`,
+`right_only_values`, and `either_values`, regardless of `limit`/`offset` pagination.
+Items may be sorted by the key or any returned count/timestamp field. The default order is
+key ascending; the default limit is 100 and the maximum is 1000.
+
+The tool reports neutral set membership. Contest duplicate selection and scoring remain in
+`qso.aggregate` after the caller chooses the external rule; award or activity meaning also
+remains outside the server.
 
 ## Reference catalogs
 

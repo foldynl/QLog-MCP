@@ -29,6 +29,7 @@ operators, aggregate functions, cardinality, and any catalog mapping.
 | --- | --- | --- |
 | Default QSO fields | Columns in `contacts` | The default projection is reduced where possible |
 | Explicit projection/filter/sort/group/metric | The requested source column(s) | The request fails with a clear compatibility error |
+| `qso.compare_sets` key | Both requested semantic fields and their required columns | The request fails with a clear compatibility error; other QSO operations remain available |
 | `grid4`, `my_grid4` | `gridsquare`, `my_gridsquare` | Each derived field disappears independently |
 | Profile scope | `station_profiles(profile_name, callsign, locator)` plus matching station fields | Profile scope is unavailable; callsign scope can still work |
 | `base_callsign`, Wavelog fields | Matching columns in `contacts_autovalue` | Fields are omitted or return `null` when no matching row exists |
@@ -38,6 +39,11 @@ operators, aggregate functions, cardinality, and any catalog mapping.
 Optional-column support is per field. A missing optional column does not disable the
 whole QSO API, and a QSO without a corresponding `contacts_autovalue` row does not make
 the rest of that QSO unavailable.
+
+`qso.compare_sets` advertises all available non-object fields as possible keys. A request
+may compare the same field on both sides, a declared contacted/logging counterpart, or two
+list fields with the same semantic item type. Compatibility is semantic as well as
+structural: two unrelated fields are rejected even when both happen to be stored as text.
 
 ## Catalog compatibility
 

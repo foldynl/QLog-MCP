@@ -127,6 +127,75 @@ async def test_logs_query_and_aggregate_without_values(qlog_database, tmp_path) 
     assert aggregate["result"]["rows"] == 2
 
 
+async def test_logs_set_comparison_shape_without_population_values(
+    qlog_database, tmp_path
+) -> None:
+    usage_log = tmp_path / "usage.jsonl"
+    secret_callsign = "JA1AAA"
+
+    async with Client(create_server(qlog_database, usage_log)) as client:
+        await client.call_tool(
+            "qso.compare_sets",
+            {
+                "left": {
+                    "scope": {"station_scope": "all", "date_from": "2025-01-01"},
+                    "key": "dxcc",
+                    "filters": {
+                        "conditions": [
+                            {"field": "callsign", "op": "eq", "value": secret_callsign}
+                        ]
+                    },
+                },
+                "right": {
+                    "scope": {"station_scope": "all"},
+                    "key": "dxcc",
+                    "filters": {
+                        "conditions": [{"field": "band", "op": "eq", "value": "15m"}]
+                    },
+                },
+                "relation": "either",
+            },
+        )
+
+    raw_log = usage_log.read_text()
+    event = json.loads(raw_log)
+    assert secret_callsign not in raw_log
+    assert "2025-01-01" not in raw_log
+    assert '"15m"' not in raw_log
+    assert event["arguments"]["left"] == {
+        "scope": {
+            "station_scope": "all",
+            "station_callsign_count": 0,
+            "operator_callsign_count": 0,
+            "station_profile_count": 0,
+            "has_date_from": True,
+            "has_date_to": False,
+        },
+        "key": "dxcc",
+        "filters": {
+            "group_count": 1,
+            "conditions": [{"field": "callsign", "op": "eq"}],
+        },
+    }
+    assert event["arguments"]["right"]["filters"] == {
+        "group_count": 1,
+        "conditions": [{"field": "band", "op": "eq"}],
+    }
+    assert event["arguments"]["relation"] == "either"
+    assert len(event["sql"]) == 1
+    assert 'COALESCE(SUM("_left_present"), 0)' in event["sql"][0]["statement"]
+    assert '"_first_qso"' in event["sql"][0]["statement"]
+    assert '"_last_qso"' in event["sql"][0]["statement"]
+    assert event["result"]["set_counts"] == {
+        "left_values": 1,
+        "right_values": 1,
+        "both_values": 1,
+        "left_only_values": 0,
+        "right_only_values": 0,
+        "either_values": 1,
+    }
+
+
 async def test_logs_tool_errors_without_untrusted_argument_values(qlog_database, tmp_path) -> None:
     usage_log = tmp_path / "usage.jsonl"
     secret_field = "secret field value"
