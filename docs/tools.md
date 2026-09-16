@@ -363,7 +363,7 @@ The QSO schema also publishes technical fields derived from the logged ADIF valu
 `qso.aggregate` calculates statistics in SQLite and returns aggregate rows, not individual QSOs. It uses the same required `scope` and optional nested `filters` as `qso.query`. Every semantic field available in `qlog.get_schema` may be used in `group_by`, including fields that commonly have many distinct values. The
 response is therefore limited to 100 groups by default and 1000 at most, and reports `truncated` when more groups matched. Aggregate results are not offset paginated.
 
-Aggregation applies operations in this order: scope and top-level filters, requested list expansion, `one_per_group`, grouping and metrics, calculations, `having`, then ordering and limit. `one_per_group` uses the same deterministic QSO datetime and contact-ID ordering as `qso.query`. When its key names a list field also exploded by `group_by`, the individual exploded item is used in that key. Metric-local filters see only the retained rows.
+Aggregation applies operations in this order: scope and top-level filters, requested list expansion, `one_per_group`, grouping and metrics, calculations, `having`, `top_per_group`, then final ordering and the overall limit. `one_per_group` uses the same deterministic QSO datetime and contact-ID ordering as `qso.query`. When its key names a list field also exploded by `group_by`, the individual exploded item is used in that key. Metric-local filters see only the retained rows.
 
 All group, metric, and calculation output names must be unique regardless of letter case. References from calculations, `having`, and `order_by` use the exact declared name.
 
@@ -456,7 +456,26 @@ For example, this keeps only bands with at least 50 QSOs and orders the complete
 }
 ```
 
-Later calculations may use earlier ones, so separate old and new confirmation percentages can feed a `subtract` calculation such as `new_rate - old_rate`. Subtracting percentages yields percentage-point change. Calculation aliases may also be used by `having`. They are returned after metric fields in each row, and the response adds their ordered names under `calculations`; requests without calculations retain the previous response shape. Undefined calculation values always sort last. `order_by` may otherwise refer to a group dimension or metric alias. Without `order_by`, results retain the existing order: first metric descending, then group dimensions ascending.
+Later calculations may use earlier ones, so separate old and new confirmation percentages can feed a `subtract` calculation such as `new_rate - old_rate`. Subtracting percentages yields percentage-point change. Calculation aliases may also be used by `having`. They are returned after metric fields in each row, and the response adds their ordered names under `calculations`; requests without calculations retain the previous response shape. Undefined calculation values always sort last. `order_by` may otherwise refer to a group dimension or metric alias. Without `top_per_group` or `order_by`, results retain the existing order: first metric descending, then group dimensions ascending.
+
+Use `top_per_group` for post-aggregation questions phrased as “for each X, return the top N Y.” This is different from `one_per_group`: `one_per_group` deduplicates individual QSOs before metrics, while `top_per_group` selects completed aggregate rows after calculations and `having`.
+
+```json
+{
+  "scope": {"station_scope": "all"},
+  "group_by": ["band", "dxcc"],
+  "metrics": [{"function": "count", "as": "qsos"}],
+  "top_per_group": {
+    "partition_by": ["band"],
+    "rank_by": [{"field": "qsos", "direction": "desc"}],
+    "limit": 3
+  }
+}
+```
+
+`partition_by` contains exact `group_by` output names corresponding to X, and at least one other group dimension must remain to rank within each partition. `rank_by` may use group dimensions, metric aliases, or calculation aliases; every direction is required because the server does not guess whether “top” means the largest or smallest values. `ROW_NUMBER` retains at most the requested number of rows per partition. Remaining group dimensions are appended as deterministic ascending tie-breakers, and undefined calculations sort last.
+
+The nested `rank_by` controls which rows are retained. The root `order_by` is independent and controls only the final presentation of the selected rows. When root `order_by` is omitted, Top-N results are ordered by `partition_by` ascending and then by their internal rank. When it is present, its fields are applied first, followed by the internal rank and then unspecified group dimensions as deterministic tie-breakers. This keeps each partition's selected rows in ranked order when `order_by` only rearranges partitions. The nested `limit` applies to each partition; the root `limit` still caps the total returned rows. With `top_per_group`, `truncated=true` means the root limit omitted additional selected rows, not that rows intentionally excluded by the per-partition limit were truncated.
 
 The semantic `mode` field follows QLog's operator-facing display: it returns `submode` when present and otherwise `mode`. Thus an FT8 record stored as `mode=MFSK, submode=FT8` matches `mode = FT8`. The physical ADIF category remains available as `adif_mode`, and `submode` can also be requested directly.
 

@@ -162,6 +162,10 @@ class UsageLoggingMiddleware(Middleware):
                 summary["calculations"] = cls._summarize_calculations(
                     arguments.get("calculations")
                 )
+            if arguments.get("top_per_group") is not None:
+                summary["top_per_group"] = cls._summarize_top_per_group(
+                    arguments.get("top_per_group")
+                )
             return summary
         if tool == "qso.compare_sets":
             return {
@@ -291,6 +295,16 @@ class UsageLoggingMiddleware(Middleware):
         ]
 
     @classmethod
+    def _summarize_top_per_group(cls, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        return {
+            "partition_by": cls._identifiers(value.get("partition_by")),
+            "rank_by": cls._summarize_required_sort(value.get("rank_by")),
+            "limit": cls._integer(value.get("limit"), 0),
+        }
+
+    @classmethod
     def _summarize_group_by(cls, value: Any) -> list[Any] | None:
         if not isinstance(value, list):
             return None
@@ -339,6 +353,19 @@ class UsageLoggingMiddleware(Middleware):
                     }
                 )
         return result
+
+    @classmethod
+    def _summarize_required_sort(cls, value: Any) -> list[dict[str, str]] | None:
+        if not isinstance(value, list):
+            return None
+        return [
+            {
+                "field": cls._identifier(item.get("field")),
+                "direction": cls._identifier(item.get("direction")),
+            }
+            for item in value
+            if isinstance(item, dict)
+        ]
 
     @classmethod
     def _identifiers(cls, value: Any) -> list[str] | None:

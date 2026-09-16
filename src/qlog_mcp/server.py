@@ -27,6 +27,7 @@ from .qso import (
     AggregateHaving,
     AggregateMetric,
     AggregateSort,
+    AggregateTopPerGroup,
     FilterGroup,
     GroupBySpec,
     LogScope,
@@ -63,6 +64,9 @@ def create_server(
             "with per-reference qso_count, first_qso, or last_qso answers the question. Prefer "
             "qso.aggregate for other statistical questions and qso.compare_sets when a question "
             "compares keys from two QSO populations, so individual QSOs are not transferred. "
+            "For questions phrased 'for each X, return the top N Y', use qso.aggregate "
+            "top_per_group; do not use one_per_group, which deduplicates individual QSOs before "
+            "metrics are calculated. "
             "Call qlog.get_schema once for each domain "
             "when first needed and reuse that capability snapshot throughout the conversation. "
             "Do not call it before every operation; refresh it only after the MCP server or "
@@ -626,7 +630,8 @@ def create_server(
             "Calculate server-side QSO statistics without returning individual QSOs. "
             "It supports caller-defined first/last deduplication, composite distinct values, "
             "fixed-size UTC time buckets, and safe arithmetic over numeric metric aliases. "
-            "Calculated values can be filtered and ordered before the result limit is applied. "
+            "It can select a separate deterministic Top-N inside each aggregate partition. "
+            "Calculated values can be filtered, ranked, and ordered before the result limit. "
             "All returned field aliases must be unique regardless of letter case. "
             "Use qlog.get_schema for field-specific functions and exact processing semantics."
         ),
@@ -667,7 +672,8 @@ def create_server(
                     "returns its own as field in every row. Supported operations are add, "
                     "subtract, multiply, divide, and percentage. divide returns a ratio; "
                     "percentage returns that ratio times 100. Division by zero or a null input "
-                    "returns null. Calculation aliases may be used by having and order_by."
+                    "returns null. Calculation aliases may be used by having, "
+                    "top_per_group.rank_by, and order_by."
                 ),
             ),
         ] = None,
@@ -692,8 +698,21 @@ def create_server(
             Field(
                 description=(
                     "Optional metric- or calculation-alias comparisons applied after all "
-                    "requested values are calculated and before ordering and limit; multiple "
-                    "conditions are combined with AND."
+                    "requested values are calculated and before top_per_group, final ordering, "
+                    "and the overall limit; multiple conditions are combined with AND."
+                )
+            ),
+        ] = None,
+        top_per_group: Annotated[
+            AggregateTopPerGroup | None,
+            Field(
+                description=(
+                    "Optional post-aggregation Top-N for questions phrased 'for each X, return "
+                    "the top N Y'. partition_by names group_by outputs for X; rank_by explicitly "
+                    "selects rows inside each partition, and its directions are required. This "
+                    "does not deduplicate QSOs: one_per_group is the pre-metric deduplication "
+                    "feature. When root order_by is omitted, rows are returned by partition "
+                    "ascending and rank ascending."
                 )
             ),
         ] = None,
@@ -702,8 +721,11 @@ def create_server(
             Field(
                 description=(
                     "Optional ordering by group dimensions, metric aliases, or calculation "
-                    "aliases before limit. Undefined calculation values sort last. Omit to "
-                    "sort by the first metric descending and then by group dimensions."
+                    "aliases after any top_per_group selection and before the overall limit. "
+                    "This controls final presentation, not Top-N selection. Undefined "
+                    "calculation values sort last. With top_per_group, selected rank remains "
+                    "the fallback before unspecified group dimensions. Without top_per_group, "
+                    "omit to sort by the first metric descending and then by group dimensions."
                 ),
             ),
         ] = None,
@@ -722,8 +744,9 @@ def create_server(
                 "Object with rows, group_by and metrics output-name lists, effective_scope, "
                 "limit, returned, and truncated. When calculations are requested, it also "
                 "contains their ordered output-name list and every row contains those numeric "
-                "or null values after the metric fields. truncated=true means additional "
-                "post-having groups were omitted after ordering."
+                "or null values after the metric fields. With top_per_group, rows excluded by "
+                "its per-partition limit are intentional; truncated=true only means the root "
+                "limit omitted additional selected rows after final ordering."
             )
         ),
     ]:
@@ -735,6 +758,7 @@ def create_server(
             metrics,
             calculations,
             having,
+            top_per_group,
             order_by,
             limit,
         )

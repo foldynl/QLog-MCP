@@ -166,7 +166,7 @@ async def test_public_tool_schemas_are_described() -> None:
     assert calculations["maxItems"] == 20
     calculation = aggregate.parameters["$defs"]["AggregateCalculation"]["properties"]
     assert "earlier calculation" in calculation["left"]["description"]
-    assert "having, and order_by" in calculation["as"]["description"]
+    assert "top_per_group.rank_by" in calculation["as"]["description"]
     assert set(aggregate.parameters["$defs"]["CalculationOperator"]["enum"]) == {
         "add",
         "subtract",
@@ -174,6 +174,24 @@ async def test_public_tool_schemas_are_described() -> None:
         "divide",
         "percentage",
     }
+    top_per_group = aggregate.parameters["$defs"]["AggregateTopPerGroup"]
+    assert top_per_group["required"] == ["partition_by", "rank_by", "limit"]
+    assert top_per_group["properties"]["partition_by"]["minItems"] == 1
+    assert top_per_group["properties"]["rank_by"]["minItems"] == 1
+    assert top_per_group["properties"]["limit"]["minimum"] == 1
+    assert top_per_group["properties"]["limit"]["maximum"] == 1000
+    assert top_per_group["examples"][0]["partition_by"] == ["band"]
+    rank_sort = aggregate.parameters["$defs"]["AggregateRankSort"]
+    assert rank_sort["required"] == ["field", "direction"]
+    assert "no implicit Top-N direction" in rank_sort["properties"]["direction"][
+        "description"
+    ]
+    assert "does not deduplicate QSOs" in aggregate.parameters["properties"][
+        "top_per_group"
+    ]["description"]
+    assert "selected rank remains" in aggregate.parameters["properties"]["order_by"][
+        "description"
+    ]
     assert "requested list expansion" in aggregate.parameters["properties"][
         "one_per_group"
     ]["description"]
@@ -308,13 +326,24 @@ async def test_qlog_context_and_qso_schema(qlog_database) -> None:
         "group_by and metrics",
         "calculations",
         "having",
-        "order and limit",
+        "top_per_group",
+        "final order and overall limit",
     ]
     calculations = schema.data["qso"]["aggregation"]["calculations"]
     assert calculations["max_items"] == 20
     assert calculations["result_type"] == "number or null"
     assert "floating-point ratio" in calculations["operators"]["divide"]
     assert "null calculations sort last" in calculations["nulls"]
+    top_per_group = schema.data["qso"]["aggregation"]["top_per_group"]
+    assert "for each X" in top_per_group["purpose"]
+    assert "one_per_group" in top_per_group["purpose"]
+    assert top_per_group["example"] == {
+        "partition_by": ["band"],
+        "rank_by": [{"field": "qsos", "direction": "desc"}],
+        "limit": 3,
+    }
+    assert "root limit" in top_per_group["limit"]
+    assert top_per_group["explicit_result_order"].startswith("root order_by fields")
     assert "typed tuples" in schema.data["qso"]["aggregation"][
         "composite_distinct_count"
     ]

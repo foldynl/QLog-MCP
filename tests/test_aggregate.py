@@ -1,6 +1,7 @@
 """Tests for server-side QSO aggregation."""
 
 import json
+import sqlite3
 
 import pytest
 from fastmcp import Client
@@ -223,6 +224,179 @@ async def test_calculates_filters_and_orders_confirmation_rate(qlog_database) ->
     assert result.data["metrics"] == ["total", "confirmed"]
     assert result.data["calculations"] == ["confirmation_rate"]
     assert result.data["truncated"] is True
+
+
+async def test_selects_deterministic_top_rows_per_group(qlog_database) -> None:
+    connection = sqlite3.connect(qlog_database)
+    connection.executemany(
+        """
+        INSERT INTO contacts (
+            id, start_time, callsign, band, dxcc, station_callsign, operator, my_gridsquare
+        ) VALUES (?, ?, ?, ?, ?, 'OK1MLG', 'OK1MLG', 'JO70AA')
+        """,
+        [
+            (5, "2026-03-01T00:00:00Z", "K1AAA", "15m", 503),
+            (6, "2026-03-01T00:01:00Z", "K1BBB", "15m", 503),
+            (7, "2026-03-01T00:02:00Z", "OK1AAA", "20m", 503),
+            (8, "2026-03-01T00:03:00Z", "OK1BBB", "20m", 503),
+        ],
+    )
+    connection.commit()
+    connection.close()
+
+    arguments = {
+        "scope": {"station_scope": "all"},
+        "group_by": ["band", "dxcc"],
+        "metrics": [{"function": "count", "as": "qsos"}],
+        "top_per_group": {
+            "partition_by": ["band"],
+            "rank_by": [{"field": "qsos", "direction": "desc"}],
+            "limit": 2,
+        },
+    }
+    async with Client(create_server(qlog_database)) as client:
+        complete = await client.call_tool("qso.aggregate", arguments)
+        arguments["limit"] = 3
+        limited = await client.call_tool("qso.aggregate", arguments)
+        arguments["limit"] = 100
+        arguments["order_by"] = [{"field": "band", "direction": "desc"}]
+        ordered = await client.call_tool("qso.aggregate", arguments)
+
+    expected = [
+        {"band": "15m", "dxcc": 503, "qsos": 2},
+        {"band": "15m", "dxcc": 339, "qsos": 1},
+        {"band": "20m", "dxcc": 339, "qsos": 2},
+        {"band": "20m", "dxcc": 503, "qsos": 2},
+    ]
+    assert complete.data["rows"] == expected
+    assert complete.data["truncated"] is False
+    assert limited.data["rows"] == expected[:3]
+    assert limited.data["truncated"] is True
+    assert ordered.data["rows"] == [*expected[2:], *expected[:2]]
+
+
+async def test_top_per_group_runs_after_having_and_calculations(qlog_database) -> None:
+    async with Client(create_server(qlog_database)) as client:
+        result = await client.call_tool(
+            "qso.aggregate",
+            {
+                "scope": {"station_scope": "all"},
+                "group_by": ["band", "mode"],
+                "metrics": [
+                    {"function": "count", "as": "total"},
+                    {
+                        "function": "count",
+                        "as": "confirmed",
+                        "filters": {
+                            "conditions": [{"field": "lotw_received", "value": "Y"}]
+                        },
+                    },
+                ],
+                "calculations": [
+                    {
+                        "op": "percentage",
+                        "left": "confirmed",
+                        "right": "total",
+                        "as": "confirmation_rate",
+                    }
+                ],
+                "having": [{"field": "total", "op": "lte", "value": 1}],
+                "top_per_group": {
+                    "partition_by": ["band"],
+                    "rank_by": [
+                        {"field": "confirmation_rate", "direction": "desc"}
+                    ],
+                    "limit": 1,
+                },
+                "order_by": [{"field": "band", "direction": "desc"}],
+            },
+        )
+
+    assert result.data["rows"] == [
+        {
+            "band": "20m",
+            "mode": "SSB",
+            "total": 1,
+            "confirmed": 0,
+            "confirmation_rate": 0.0,
+        },
+        {
+            "band": "15m",
+            "mode": "FT8",
+            "total": 1,
+            "confirmed": 1,
+            "confirmation_rate": 100.0,
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("group_by", "top_per_group", "message"),
+    [
+        (
+            ["band", "dxcc"],
+            {
+                "partition_by": ["qsos"],
+                "rank_by": [{"field": "qsos", "direction": "desc"}],
+                "limit": 3,
+            },
+            "top_per_group.partition_by field 'qsos' is not a group_by output",
+        ),
+        (
+            ["band", "dxcc"],
+            {
+                "partition_by": ["band", "dxcc"],
+                "rank_by": [{"field": "qsos", "direction": "desc"}],
+                "limit": 3,
+            },
+            "requires at least one group_by field outside partition_by",
+        ),
+        (
+            ["band", "dxcc"],
+            {
+                "partition_by": ["band"],
+                "rank_by": [{"field": "other", "direction": "desc"}],
+                "limit": 3,
+            },
+            "Unknown top_per_group.rank_by field: other",
+        ),
+        (
+            ["band", "dxcc"],
+            {
+                "partition_by": ["band"],
+                "rank_by": [{"field": "band", "direction": "asc"}],
+                "limit": 3,
+            },
+            "rank_by must contain at least one field that can vary within a partition",
+        ),
+        (
+            ["band", "dxcc"],
+            {
+                "partition_by": ["band"],
+                "rank_by": [{"field": "qsos"}],
+                "limit": 3,
+            },
+            "direction",
+        ),
+    ],
+)
+async def test_rejects_invalid_top_per_group(
+    qlog_database, group_by, top_per_group, message
+) -> None:
+    async with Client(create_server(qlog_database)) as client:
+        result = await client.call_tool(
+            "qso.aggregate",
+            {
+                "scope": {"station_scope": "all"},
+                "group_by": group_by,
+                "metrics": [{"function": "count", "as": "qsos"}],
+                "top_per_group": top_per_group,
+            },
+            raise_on_error=False,
+        )
+
+    assert result.is_error is True
+    assert message in result.content[0].text
 
 
 async def test_supports_maximum_calculation_chain(qlog_database) -> None:

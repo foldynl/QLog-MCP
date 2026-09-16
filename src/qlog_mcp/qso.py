@@ -383,7 +383,7 @@ class AggregateCalculation(BaseModel):
         pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
         description=(
             "Unique name returned for this calculation and available to later calculations, "
-            "having, and order_by."
+            "having, top_per_group.rank_by, and order_by."
         ),
     )
 
@@ -401,6 +401,73 @@ class AggregateSort(BaseModel):
         default=SortDirection.ASC,
         description="Sort direction for this aggregate result field.",
     )
+
+
+class AggregateRankSort(BaseModel):
+    """One explicit criterion used to rank aggregate rows inside each partition."""
+
+    field: str = Field(
+        description=(
+            "Exact group_by, metric, or calculation output name used to select rows inside "
+            "each top_per_group partition."
+        )
+    )
+    direction: SortDirection = Field(
+        description=(
+            "Required ranking direction. Use desc for largest values or asc for smallest; "
+            "there is no implicit Top-N direction."
+        )
+    )
+
+
+class AggregateTopPerGroup(BaseModel):
+    """Keep a deterministic Top-N of completed aggregate rows in each partition."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "partition_by": ["band"],
+                    "rank_by": [{"field": "qsos", "direction": "desc"}],
+                    "limit": 3,
+                }
+            ]
+        }
+    )
+
+    partition_by: list[str] = Field(
+        min_length=1,
+        description=(
+            "Exact group_by output names corresponding to X in 'for each X'. Ranking "
+            "restarts for every distinct combination of these dimensions."
+        ),
+    )
+    rank_by: list[AggregateRankSort] = Field(
+        min_length=1,
+        description=(
+            "Required criteria that determine which completed aggregate rows are retained "
+            "inside each partition. This is separate from the root order_by, which only "
+            "orders rows after Top-N selection."
+        ),
+    )
+    limit: int = Field(
+        ge=1,
+        le=1000,
+        description=(
+            "Maximum rows retained in each partition, from 1 to 1000. The root limit still "
+            "caps the total response across all partitions."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_unique_fields(self) -> AggregateTopPerGroup:
+        partition_names = [name.casefold() for name in self.partition_by]
+        if len(partition_names) != len(set(partition_names)):
+            raise ValueError("top_per_group.partition_by must not contain duplicate fields")
+        rank_names = [item.field.casefold() for item in self.rank_by]
+        if len(rank_names) != len(set(rank_names)):
+            raise ValueError("top_per_group.rank_by must not contain duplicate fields")
+        return self
 
 
 class AggregateHaving(BaseModel):
@@ -1798,7 +1865,8 @@ class QsoQuery:
                     "group_by and metrics",
                     "calculations",
                     "having",
-                    "order and limit",
+                    "top_per_group",
+                    "final order and overall limit",
                 ],
                 "one_per_group": (
                     "Optionally keep the deterministic first or last QSO for each caller-"
@@ -1832,8 +1900,45 @@ class QsoQuery:
                     ),
                     "post_processing": (
                         "Calculation aliases are returned in each row and may be referenced by "
-                        "later calculations, having, and order_by before limit is applied."
+                        "later calculations, having, top_per_group.rank_by, and order_by before "
+                        "the overall limit is applied."
                     ),
+                },
+                "top_per_group": {
+                    "purpose": (
+                        "For questions phrased 'for each X, return the top N Y', retain up to "
+                        "N completed aggregate rows independently for each X. This is not QSO "
+                        "deduplication; one_per_group operates on individual QSOs before metrics."
+                    ),
+                    "partition_by": (
+                        "One or more exact group_by output names corresponding to X. At least "
+                        "one other group_by dimension must remain to rank inside each partition."
+                    ),
+                    "rank_by": (
+                        "One or more group_by, metric, or calculation output names. Every "
+                        "direction is required and controls selection, not final presentation."
+                    ),
+                    "limit": (
+                        "Maximum rows retained per partition, from 1 to 1000. The root limit "
+                        "separately caps returned rows across all partitions."
+                    ),
+                    "ties": (
+                        "ROW_NUMBER returns at most the requested count; remaining group_by "
+                        "dimensions provide deterministic ascending tie-breakers."
+                    ),
+                    "default_result_order": (
+                        "partition_by ascending, then selected rank ascending when root "
+                        "order_by is omitted"
+                    ),
+                    "explicit_result_order": (
+                        "root order_by fields, then selected rank, then remaining group_by "
+                        "dimensions as deterministic tie-breakers"
+                    ),
+                    "example": {
+                        "partition_by": ["band"],
+                        "rank_by": [{"field": "qsos", "direction": "desc"}],
+                        "limit": 3,
+                    },
                 },
                 "group_by": {
                     "all_fields": True,
@@ -1987,6 +2092,7 @@ class QsoQuery:
         metrics: list[AggregateMetric],
         calculations: list[AggregateCalculation] | None,
         having: list[AggregateHaving] | None,
+        top_per_group: AggregateTopPerGroup | None,
         order_by: list[AggregateSort] | None,
         limit: int,
     ) -> dict[str, Any]:
@@ -2012,6 +2118,9 @@ class QsoQuery:
             self._validate_aggregate_names(group_names, metrics, calculation_items)
             metric_names = [metric.output_name for metric in metrics]
             calculation_names = [item.output_name for item in calculation_items]
+            self._validate_top_per_group(
+                top_per_group, group_names, metric_names, calculation_names
+            )
 
             metric_parameters: list[Any] = []
             metric_sql = [
@@ -2065,26 +2174,59 @@ class QsoQuery:
                     clause=" WHERE ",
                     calculation_aliases=set(calculation_names),
                 )
-                order_sql = self._compile_aggregate_sort(
-                    order_by,
-                    group_names,
-                    metric_names,
-                    calculation_names,
-                )
-                sql = (
-                    f'SELECT * FROM ({calculated_sql}) AS "_calculated"{having_sql} '
-                    f"ORDER BY {order_sql} LIMIT ?"
+                completed_sql = (
+                    f'SELECT * FROM ({calculated_sql}) AS "_calculated"{having_sql}'
                 )
             else:
                 having_sql = self._compile_having(
                     having, set(metric_names), having_parameters
                 )
-                order_sql = self._compile_aggregate_sort(
-                    order_by, group_names, metric_names, []
-                )
-                sql = f"{aggregate_sql}{having_sql} ORDER BY {order_sql} LIMIT ?"
+                completed_sql = f"{aggregate_sql}{having_sql}"
             parameters.extend(having_parameters)
-            parameters.append(limit + 1)
+
+            if top_per_group is not None:
+                partition_sql = ", ".join(
+                    f'"{name}"' for name in top_per_group.partition_by
+                )
+                rank_order_sql = self._compile_aggregate_sort(
+                    top_per_group.rank_by,
+                    group_names,
+                    metric_names,
+                    calculation_names,
+                )
+                ranked_sql = (
+                    'SELECT "_top_source".*, ROW_NUMBER() OVER ('
+                    f"PARTITION BY {partition_sql} ORDER BY {rank_order_sql}) "
+                    'AS "_qlog.top_rank" '
+                    f'FROM ({completed_sql}) AS "_top_source"'
+                )
+                if order_by:
+                    order_sql = self._compile_aggregate_sort(
+                        order_by,
+                        group_names,
+                        metric_names,
+                        calculation_names,
+                        include_top_rank_tie_breaker=True,
+                    )
+                else:
+                    order_sql = ", ".join(
+                        [
+                            *(f'"{name}" ASC' for name in top_per_group.partition_by),
+                            '"_qlog.top_rank" ASC',
+                        ]
+                    )
+                sql = (
+                    f'SELECT * FROM ({ranked_sql}) AS "_top_ranked" '
+                    'WHERE "_qlog.top_rank" <= ? '
+                    f"ORDER BY {order_sql} LIMIT ?"
+                )
+                parameters.extend((top_per_group.limit, limit + 1))
+            else:
+                order_sql = self._compile_aggregate_sort(
+                    order_by, group_names, metric_names, calculation_names
+                )
+                sql = f"{completed_sql} ORDER BY {order_sql} LIMIT ?"
+                parameters.append(limit + 1)
 
             rows = await self._execute_sql(connection, sql, parameters)
 
@@ -2620,6 +2762,41 @@ class QsoQuery:
                 raise InvalidQueryError(f"Duplicate aggregate result field: {name}")
             normalized_names.add(normalized)
 
+    @staticmethod
+    def _validate_top_per_group(
+        top_per_group: AggregateTopPerGroup | None,
+        group_by: list[str],
+        metrics: list[str],
+        calculations: list[str],
+    ) -> None:
+        if top_per_group is None:
+            return
+
+        group_fields = set(group_by)
+        partition_fields = set(top_per_group.partition_by)
+        for field in top_per_group.partition_by:
+            if field not in group_fields:
+                raise InvalidQueryError(
+                    f"top_per_group.partition_by field {field!r} is not a group_by output"
+                )
+        if partition_fields == group_fields:
+            raise InvalidQueryError(
+                "top_per_group requires at least one group_by field outside partition_by "
+                "to rank"
+            )
+
+        allowed = group_fields | set(metrics) | set(calculations)
+        for item in top_per_group.rank_by:
+            if item.field not in allowed:
+                raise InvalidQueryError(
+                    f"Unknown top_per_group.rank_by field: {item.field}"
+                )
+        if all(item.field in partition_fields for item in top_per_group.rank_by):
+            raise InvalidQueryError(
+                "top_per_group.rank_by must contain at least one field that can vary "
+                "within a partition"
+            )
+
     async def _compile_scope(
         self,
         connection: aiosqlite.Connection,
@@ -3023,10 +3200,12 @@ class QsoQuery:
 
     @staticmethod
     def _compile_aggregate_sort(
-        order_by: list[AggregateSort] | None,
+        order_by: list[AggregateSort] | list[AggregateRankSort] | None,
         group_by: list[str],
         metrics: list[str],
         calculations: list[str],
+        *,
+        include_top_rank_tie_breaker: bool = False,
     ) -> str:
         allowed = set(group_by + metrics + calculations)
         requested = order_by or [
@@ -3047,6 +3226,8 @@ class QsoQuery:
                 parts.append(f'("{item.field}" IS NULL) ASC')
             parts.append(f'"{item.field}" {item.direction.value.upper()}')
             sorted_fields.add(item.field)
+        if include_top_rank_tie_breaker:
+            parts.append('"_qlog.top_rank" ASC')
         for name in group_by:
             if name not in sorted_fields:
                 parts.append(f'"{name}" ASC')

@@ -60,6 +60,13 @@ async def test_logs_query_and_aggregate_without_values(qlog_database, tmp_path) 
                         "as": "entity_density",
                     }
                 ],
+                "top_per_group": {
+                    "partition_by": ["park"],
+                    "rank_by": [
+                        {"field": "entity_density", "direction": "desc"}
+                    ],
+                    "limit": 1,
+                },
             },
         )
 
@@ -136,9 +143,14 @@ async def test_logs_query_and_aggregate_without_values(qlog_database, tmp_path) 
             "as": "entity_density",
         }
     ]
+    assert aggregate["arguments"]["top_per_group"] == {
+        "partition_by": ["park"],
+        "rank_by": [{"field": "entity_density", "direction": "desc"}],
+        "limit": 1,
+    }
     assert "GROUP BY" in aggregate["sql"][0]["statement"]
     assert "600" not in aggregate["sql"][0]["statement"]
-    assert aggregate["sql"][0]["parameter_types"] == ["int"] * 5
+    assert aggregate["sql"][0]["parameter_types"] == ["int"] * 6
     assert aggregate["sql"][0]["returned_rows"] == 2
     assert aggregate["result"]["rows"] == 2
 
