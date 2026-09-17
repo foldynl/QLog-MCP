@@ -144,12 +144,12 @@ whole-band filtering (`band`) and exact frequency/range filtering (`frequency`).
 For every task, whether fixing a bug, adding a feature, refactoring, reviewing,
 or designing a change, think through the existing code and choose the smallest smart change that is semantically complete.
 
-Prefer reusing existing data flow, state, QObject ownership, lifecycle, signals, APIs, and established
-project patterns. Avoid new state, parallel lifecycle management, broad signal rewiring, helpers, 
+Prefer reusing existing data flow, state, APIs, and established
+project patterns. Avoid new state, parallel lifecycle management, helpers, 
 abstractions, defensive branches, or extra changed files unless a concrete verified behavior
 requires them. A patch that works but adds unnecessary machinery is not acceptable.
 
-Before handing off any QLog implementation, perform an explicit simplification pass. Challenge every added
+Before handing off any QLog-MCP implementation, perform an explicit simplification pass. Challenge every added
 line and mechanism, remove anything not required for the requested behavior, and verify that the resulting
 minimal patch still covers the root cause and preserves existing behavior. The desired result is not merely
 short code, but a minimal, clear, well-reasoned, low-churn solution.
