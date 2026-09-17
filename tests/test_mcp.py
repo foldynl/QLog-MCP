@@ -170,8 +170,14 @@ async def test_public_tool_schemas_are_described() -> None:
     assert aggregate.parameters["properties"]["metrics"]["minItems"] == 1
     calculations = aggregate.parameters["properties"]["calculations"]["anyOf"][0]
     assert calculations["maxItems"] == 20
+    assert aggregate.parameters["$defs"]["AggregateMetric"]["additionalProperties"] is False
     calculation = aggregate.parameters["$defs"]["AggregateCalculation"]["properties"]
     assert "earlier calculation" in calculation["left"]["description"]
+    for name in ("left", "right"):
+        operand_types = {item["type"] for item in calculation[name]["anyOf"]}
+        assert operand_types == {"string", "number"}
+        alias = next(item for item in calculation[name]["anyOf"] if item["type"] == "string")
+        assert alias["pattern"] == "^[A-Za-z_][A-Za-z0-9_]*$"
     assert "top_per_group.rank_by" in calculation["as"]["description"]
     assert set(aggregate.parameters["$defs"]["CalculationOperator"]["enum"]) == {
         "add",
@@ -338,6 +344,7 @@ async def test_qlog_context_and_qso_schema(qlog_database) -> None:
     calculations = schema.data["qso"]["aggregation"]["calculations"]
     assert calculations["max_items"] == 20
     assert calculations["result_type"] == "number or null"
+    assert "finite numeric literals" in calculations["operands"]
     assert "floating-point ratio" in calculations["operators"]["divide"]
     assert "null calculations sort last" in calculations["nulls"]
     top_per_group = schema.data["qso"]["aggregation"]["top_per_group"]

@@ -687,12 +687,12 @@ def create_server(
             Field(
                 max_length=MAX_AGGREGATE_CALCULATIONS,
                 description=(
-                    "Optional ordered arithmetic over numeric metric aliases. Each item may "
-                    "reference metrics or earlier calculations by their exact as names and "
-                    "returns its own as field in every row. Supported operations are add, "
-                    "subtract, multiply, divide, and percentage. divide returns a ratio; "
-                    "percentage returns that ratio times 100. Division by zero or a null input "
-                    "returns null. Calculation aliases may be used by having, "
+                    "Optional ordered arithmetic over numeric metric aliases and finite numeric "
+                    "literals. Each item may reference metrics or earlier calculations by their "
+                    "exact as names and returns its own as field in every row. Supported "
+                    "operations are add, subtract, multiply, divide, and percentage. divide "
+                    "returns a ratio; percentage returns that ratio times 100. Division by zero "
+                    "or a null input returns null. Calculation aliases may be used by having, "
                     "top_per_group.rank_by, and order_by."
                 ),
             ),

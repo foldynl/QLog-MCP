@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 from fastmcp import Client
 
+from qlog_mcp.qso import AggregateCalculation
 from qlog_mcp.server import create_server
 
 
@@ -76,6 +77,31 @@ async def test_time_dimension_and_filtered_metric(qlog_database) -> None:
         {"year": "2025", "all_qsos": 1, "asia_qsos": 1},
         {"year": "2026", "all_qsos": 3, "asia_qsos": 2},
     ]
+
+
+async def test_rejects_unknown_aggregate_metric_fields(qlog_database) -> None:
+    async with Client(create_server(qlog_database)) as client:
+        result = await client.call_tool(
+            "qso.aggregate",
+            {
+                "scope": {"station_scope": "all"},
+                "group_by": ["band"],
+                "metrics": [
+                    {
+                        "function": "count",
+                        "as": "cw_qso_count",
+                        "filter": {
+                            "conditions": [{"field": "mode", "value": "CW"}]
+                        },
+                    }
+                ],
+            },
+            raise_on_error=False,
+        )
+
+    assert result.is_error is True
+    assert "metrics.0.filter" in result.content[0].text
+    assert "Extra inputs are not permitted" in result.content[0].text
 
 
 async def test_numeric_and_distinct_aggregate_functions(qlog_database) -> None:
@@ -497,6 +523,65 @@ async def test_supports_all_calculation_operations_and_zero_denominator(
     assert row["divided"] == 2.0
     assert row["percentage"] == 50.0
     assert row["undefined"] is None
+
+
+async def test_calculations_accept_finite_numeric_literals(qlog_database) -> None:
+    async with Client(create_server(qlog_database)) as client:
+        result = await client.call_tool(
+            "qso.aggregate",
+            {
+                "scope": {"station_scope": "all"},
+                "group_by": [],
+                "metrics": [{"function": "count", "as": "total"}],
+                "calculations": [
+                    {
+                        "op": "multiply",
+                        "left": "total",
+                        "right": 2,
+                        "as": "weighted",
+                    },
+                    {
+                        "op": "subtract",
+                        "left": 10,
+                        "right": "total",
+                        "as": "remaining",
+                    },
+                    {
+                        "op": "add",
+                        "left": 1.5,
+                        "right": 2.5,
+                        "as": "constant_sum",
+                    },
+                    {
+                        "op": "divide",
+                        "left": "weighted",
+                        "right": 4,
+                        "as": "normalized",
+                    },
+                    {
+                        "op": "divide",
+                        "left": "total",
+                        "right": 0,
+                        "as": "undefined",
+                    },
+                ],
+            },
+        )
+
+    row = result.data["rows"][0]
+    assert row["weighted"] == 8.0
+    assert row["remaining"] == 6.0
+    assert row["constant_sum"] == 4.0
+    assert row["normalized"] == 2.0
+    assert row["undefined"] is None
+
+
+@pytest.mark.parametrize("operand", [True, "2", float("inf"), float("-inf"), float("nan")])
+def test_calculations_reject_non_numeric_literals(operand: object) -> None:
+    with pytest.raises(ValueError):
+        AggregateCalculation.model_validate(
+            {"op": "multiply", "left": "total", "right": operand, "as": "result"}
+        )
 
 
 async def test_chains_period_rates_and_orders_null_last(qlog_database) -> None:

@@ -58,12 +58,18 @@ async def test_logs_query_and_aggregate_without_values(qlog_database, tmp_path) 
                         "left": "country_bands",
                         "right": "qso_count",
                         "as": "entity_density",
-                    }
+                    },
+                    {
+                        "op": "multiply",
+                        "left": "entity_density",
+                        "right": 7.25,
+                        "as": "weighted_density",
+                    },
                 ],
                 "top_per_group": {
                     "partition_by": ["park"],
                     "rank_by": [
-                        {"field": "entity_density", "direction": "desc"}
+                        {"field": "weighted_density", "direction": "desc"}
                     ],
                     "limit": 1,
                 },
@@ -76,6 +82,7 @@ async def test_logs_query_and_aggregate_without_values(qlog_database, tmp_path) 
     assert secret_callsign not in raw_log
     assert list_value not in raw_log
     assert "2026-01-01" not in raw_log
+    assert "7.25" not in raw_log
     assert [event["tool"] for event in events] == ["qso.query", "qso.aggregate"]
     assert {event["session_id"] for event in events} == {events[0]["session_id"]}
     assert [event["call_id"] for event in events] == ["000001", "000002"]
@@ -138,19 +145,33 @@ async def test_logs_query_and_aggregate_without_values(qlog_database, tmp_path) 
     assert aggregate["arguments"]["calculations"] == [
         {
             "op": "divide",
-            "left": "country_bands",
-            "right": "qso_count",
+            "left": "alias",
+            "right": "alias",
             "as": "entity_density",
-        }
+        },
+        {
+            "op": "multiply",
+            "left": "alias",
+            "right": "literal",
+            "as": "weighted_density",
+        },
     ]
     assert aggregate["arguments"]["top_per_group"] == {
         "partition_by": ["park"],
-        "rank_by": [{"field": "entity_density", "direction": "desc"}],
+        "rank_by": [{"field": "weighted_density", "direction": "desc"}],
         "limit": 1,
     }
     assert "GROUP BY" in aggregate["sql"][0]["statement"]
     assert "600" not in aggregate["sql"][0]["statement"]
-    assert aggregate["sql"][0]["parameter_types"] == ["int"] * 6
+    assert aggregate["sql"][0]["parameter_types"] == [
+        "int",
+        "int",
+        "int",
+        "int",
+        "float",
+        "int",
+        "int",
+    ]
     assert aggregate["sql"][0]["returned_rows"] == 2
     assert aggregate["result"]["rows"] == 2
 

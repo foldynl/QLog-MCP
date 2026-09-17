@@ -287,8 +287,8 @@ class UsageLoggingMiddleware(Middleware):
         return [
             {
                 "op": cls._identifier(item.get("op")),
-                "left": cls._identifier(item.get("left")),
-                "right": cls._identifier(item.get("right")),
+                "left": cls._calculation_operand_kind(item.get("left")),
+                "right": cls._calculation_operand_kind(item.get("right")),
                 "as": cls._identifier(item.get("as")),
             }
             for item in value
@@ -379,6 +379,14 @@ class UsageLoggingMiddleware(Middleware):
         return (
             value if isinstance(value, str) and _SAFE_IDENTIFIER.fullmatch(value) else "<invalid>"
         )
+
+    @staticmethod
+    def _calculation_operand_kind(value: Any) -> str:
+        if isinstance(value, str):
+            return "alias"
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return "literal"
+        return "<invalid>"
 
     @staticmethod
     def _integer(value: Any, default: int) -> int | str:

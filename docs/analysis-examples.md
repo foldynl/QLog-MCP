@@ -297,9 +297,30 @@ time interval, one aggregate request can produce neutral building blocks:
       "fields": ["dxcc", "band"],
       "as": "entity_band_units"
     }
+  ],
+  "calculations": [
+    {
+      "op": "multiply",
+      "left": "accepted_qsos",
+      "right": 2,
+      "as": "qso_points"
+    },
+    {
+      "op": "multiply",
+      "left": "outside_europe_qsos",
+      "right": 3,
+      "as": "outside_europe_points"
+    },
+    {
+      "op": "add",
+      "left": "qso_points",
+      "right": "outside_europe_points",
+      "as": "example_points"
+    }
   ]
 }
 ```
 
-The LLM applies the external point values and formula to these counts. QLog MCP neither
-labels the retained rows as official duplicates nor calculates an official score.
+After external rules supply point values, the LLM can express their arithmetic with numeric
+literals and let QLog MCP calculate it over the neutral counts. QLog MCP still neither labels
+the retained rows as official duplicates nor treats the example result as an official score.

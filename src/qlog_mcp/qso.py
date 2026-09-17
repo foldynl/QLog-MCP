@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date
 from enum import Enum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import aiosqlite
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -127,6 +127,11 @@ CALCULATION_OPERATOR_DESCRIPTIONS = {
         "input is null."
     ),
 }
+
+CalculationOperand = (
+    Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
+    | Annotated[float, Field(strict=True, allow_inf_nan=False)]
+)
 MAX_AGGREGATE_CALCULATIONS = 20
 
 
@@ -293,7 +298,7 @@ class OnePerGroup(BaseModel):
 class AggregateMetric(BaseModel):
     """One aggregate value calculated for every result group."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     function: AggregateFunction = Field(description="Aggregate function to calculate.")
     field: str | None = Field(
@@ -366,16 +371,16 @@ class AggregateCalculation(BaseModel):
             "multiplied by 100."
         )
     )
-    left: str = Field(
-        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+    left: CalculationOperand = Field(
         description=(
-            "Exact alias of a numeric metric or an earlier calculation in this request."
+            "Exact alias of a numeric metric or an earlier calculation in this request, "
+            "or a finite numeric literal."
         ),
     )
-    right: str = Field(
-        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+    right: CalculationOperand = Field(
         description=(
-            "Exact alias of a numeric metric or an earlier calculation in this request."
+            "Exact alias of a numeric metric or an earlier calculation in this request, "
+            "or a finite numeric literal."
         ),
     )
     output_name: str = Field(
@@ -2060,8 +2065,9 @@ class QsoQuery:
                     "max_items": MAX_AGGREGATE_CALCULATIONS,
                     "result_type": "number or null",
                     "operands": (
-                        "Exact aliases of numeric metrics or earlier calculations; list order "
-                        "defines dependencies, and group dimensions are not operands."
+                        "Exact aliases of numeric metrics or earlier calculations, or finite "
+                        "numeric literals. List order defines alias dependencies; group "
+                        "dimensions are not operands."
                     ),
                     "operators": {
                         operator.value: CALCULATION_OPERATOR_DESCRIPTIONS[operator]
@@ -2339,6 +2345,7 @@ class QsoQuery:
                     metrics,
                     calculation_items,
                     columns,
+                    parameters,
                 )
                 having_sql = self._compile_having(
                     having,
@@ -3349,6 +3356,7 @@ class QsoQuery:
         metrics: list[AggregateMetric],
         calculations: list[AggregateCalculation],
         columns: set[str],
+        parameters: list[Any],
     ) -> str:
         known = set(group_by) | {metric.output_name for metric in metrics}
         numeric = {
@@ -3359,18 +3367,23 @@ class QsoQuery:
         ctes = [f'"_aggregate" AS ({aggregate_sql})']
         source = '"_aggregate"'
         for index, calculation in enumerate(calculations):
+            operands: list[str] = []
             for operand in (calculation.left, calculation.right):
-                if operand not in known:
-                    raise InvalidQueryError(
-                        f"Unknown or forward aggregate calculation operand: {operand}"
-                    )
-                if operand not in numeric:
-                    raise InvalidQueryError(
-                        f"Aggregate calculation operand must be numeric: {operand}"
-                    )
+                if isinstance(operand, str):
+                    if operand not in known:
+                        raise InvalidQueryError(
+                            f"Unknown or forward aggregate calculation operand: {operand}"
+                        )
+                    if operand not in numeric:
+                        raise InvalidQueryError(
+                            f"Aggregate calculation operand must be numeric: {operand}"
+                        )
+                    operands.append(f'{source}."{operand}"')
+                else:
+                    parameters.append(operand)
+                    operands.append("?")
 
-            left = f'{source}."{calculation.left}"'
-            right = f'{source}."{calculation.right}"'
+            left, right = operands
             if calculation.op == CalculationOperator.ADD:
                 expression = f"({left} + {right})"
             elif calculation.op == CalculationOperator.SUBTRACT:
