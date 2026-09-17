@@ -54,10 +54,11 @@ Each result includes the QSO count and first/last QSO on both sides. The relatio
 only that a DXCC key occurs in one filtered population and not the other; it does not
 interpret award status.
 
-## DXCC entities absent from selected confirmations
+## DXCC entities absent from selected confirmations by band and mode
 
 After external DXCC rules tell the LLM which confirmation states and entity dates to use,
-one `catalog.match_qso` call returns the catalog complement and complete set counts:
+one `catalog.match_qso` call returns the catalog complement and complete set counts for
+every band/mode combination observed in the selected station scope:
 
 ```json
 {
@@ -74,13 +75,17 @@ one `catalog.match_qso` call returns the catalog complement and complete set cou
   "catalog_filters": {
     "conditions": [{"field": "deleted", "op": "eq", "value": false}]
   },
+  "partition_by": ["band", "mode"],
   "relation": "not_matched",
   "fields": ["code", "name", "prefix", "continent"]
 }
 ```
 
-The returned rows are absent from the caller-selected QSO population. The server does not
-claim that they are officially needed or creditable.
+Each item contains its `partition`, and `summaries` contains complete counts for every
+observed partition even when detail items are paginated. Partitions are formed before the
+confirmation filter, so a band/mode with no selected confirmation is retained. The returned
+rows are absent from the caller-selected QSO population. The server does not claim that they
+are officially needed or creditable.
 
 For a “worked” list, remove the confirmation filter. For a “confirmed” list, choose the
 states accepted by the relevant award rules first. `lotw_received = Y` and

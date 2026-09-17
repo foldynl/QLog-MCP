@@ -65,6 +65,10 @@ catalog fields and may change `source_capability` from `full` to `reduced`.
 | DXCC | `dxcc`, `my_dxcc` |
 | Satellite | `satellite_name` |
 
+Optional `catalog.match_qso partition_by` dimensions are validated against the same QSO
+capability snapshot. An unavailable field produces a compatibility error; list-valued and
+object fields are rejected because partitioning accepts scalar dimensions only.
+
 Membership catalogs have no `catalog.match_qso` mapping. They expose only lists downloaded into
 QLog, not a global club directory. Their relationship to a QSO is time-aware and uses the
 contacted base callsign, so the server advertises QSO fields only when

@@ -1525,6 +1525,179 @@ class QsoQuery:
             ),
         ], parameters
 
+    async def compile_partitioned_value_set(
+        self,
+        connection: aiosqlite.Connection,
+        scope: LogScope,
+        filters: FilterGroup | None,
+        field_name: str,
+        partition_by: list[str],
+        max_partitions: int,
+        *,
+        include_time_bounds: bool = False,
+    ) -> tuple[list[str], list[Any], list[tuple[str, str]]]:
+        """Compile QSO keys grouped inside partitions derived before QSO filters."""
+        await self._register_sql_functions(connection)
+        columns = await self._available_columns(connection)
+        self._require_contacts(columns)
+
+        field = QSO_FIELDS.get(field_name)
+        if field is None:
+            raise InvalidQueryError(f"Unknown QSO field: {field_name}")
+        if not field.available(columns):
+            raise IncompatibleDatabaseError(
+                f"QSO field {field_name!r} is unavailable in this QLog database schema"
+            )
+        partitions = self._resolve_set_partitions(partition_by, columns)
+
+        scope_parameters: list[Any] = []
+        scope_parts = await self._compile_scope(
+            connection, scope, scope_parameters, columns
+        )
+        scope_where = " AND ".join(f"({part})" for part in scope_parts) or "1 = 1"
+        filter_parameters: list[Any] = []
+        matches = (
+            self._compile_group(filters, filter_parameters, columns)
+            if filters is not None
+            else "1 = 1"
+        )
+
+        source = f"contacts AS c{self._autovalue_join(columns)}"
+        partition_aliases = [
+            f"_partition_{index}" for index in range(len(partitions))
+        ]
+        partition_columns = ", ".join(f'"{name}"' for name in partition_aliases)
+        partition_order = ", ".join(
+            f'"{name}" COLLATE NOCASE ASC'
+            if partitions[index][2] == "string"
+            else f'"{name}" ASC'
+            for index, name in enumerate(partition_aliases)
+        )
+        partition_rows = ", ".join(
+            f'p."{name}" AS "{name}"' for name in partition_aliases
+        )
+        partition_group = ", ".join(
+            f'p."{name}"' for name in partition_aliases
+        )
+
+        qso_partition_select = ", ".join(
+            f'{expression} AS "{partition_aliases[index]}"'
+            for index, (_, expression, _) in enumerate(partitions)
+        )
+        partition_join = " AND ".join(
+            (
+                f'q."{name}" COLLATE NOCASE IS p."{name}" COLLATE NOCASE'
+                if partitions[index][2] == "string"
+                else f'q."{name}" IS p."{name}"'
+            )
+            for index, name in enumerate(partition_aliases)
+        )
+
+        value = self._query_field(field_name, columns).select_expression()
+        qso_time = (
+            self._query_field("datetime", columns).select_expression()
+            if include_time_bounds
+            else "NULL"
+        )
+        time_bounds = (
+            ', MIN(q."_datetime") AS "_first_qso", '
+            'MAX(q."_datetime") AS "_last_qso"'
+            if include_time_bounds
+            else ""
+        )
+        key_collation = " COLLATE NOCASE" if field.value_type == "string" else ""
+
+        if field.cardinality == "many":
+            qso_rows = (
+                '"_qso_rows" AS ('
+                'SELECT c."id" AS "_contact_id", '
+                f'{qso_time} AS "_datetime", {qso_partition_select}, '
+                f"qlog_list_values('{field_name}', {value}) || char(31) AS \"_rest\", "
+                f'({matches}) AS "_matches" FROM {source} WHERE {scope_where})'
+            )
+            recursive_columns = ", ".join(
+                [
+                    '"_contact_id"',
+                    '"_datetime"',
+                    *[f'"{name}"' for name in partition_aliases],
+                    '"_rest"',
+                    '"_key"',
+                    '"_matches"',
+                ]
+            )
+            recursive_partitions = "".join(
+                f', "{name}"' for name in partition_aliases
+            )
+            value_ctes = [
+                (
+                    f'"_qso_split"({recursive_columns}) AS ('
+                    'SELECT "_contact_id", "_datetime"'
+                    f'{recursive_partitions}, "_rest", NULL, "_matches" '
+                    'FROM "_qso_rows" UNION ALL '
+                    'SELECT "_contact_id", "_datetime"'
+                    f"{recursive_partitions}, "
+                    'substr("_rest", instr("_rest", char(31)) + 1), '
+                    'substr("_rest", 1, instr("_rest", char(31)) - 1), "_matches" '
+                    'FROM "_qso_split" WHERE "_rest" <> \'\')'
+                ),
+                (
+                    '"_qso_items" AS ('
+                    'SELECT DISTINCT "_contact_id", "_datetime"'
+                    f'{recursive_partitions}, "_key", "_matches" FROM "_qso_split" '
+                    'WHERE NULLIF(TRIM(CAST("_key" AS TEXT)), \'\') IS NOT NULL)'
+                ),
+            ]
+            value_source = '"_qso_items"'
+        else:
+            key = (
+                f"NULLIF(TRIM(CAST({value} AS TEXT)), '')"
+                if field.value_type == "string"
+                else value
+            )
+            qso_rows = (
+                '"_qso_rows" AS ('
+                'SELECT c."id" AS "_contact_id", '
+                f'{qso_time} AS "_datetime", {qso_partition_select}, '
+                f'{key} AS "_key", ({matches}) AS "_matches" '
+                f"FROM {source} WHERE {scope_where})"
+            )
+            value_ctes = []
+            value_source = '"_qso_rows"'
+
+        ctes = [
+            qso_rows,
+            (
+                '"_partition_sample" AS ('
+                f'SELECT {partition_columns} FROM "_qso_rows" '
+                f"GROUP BY {partition_columns} ORDER BY {partition_order} "
+                f"LIMIT {max_partitions + 1})"
+            ),
+            (
+                '"_partition_meta" AS ('
+                'SELECT COUNT(*) AS "_partition_count" FROM "_partition_sample")'
+            ),
+            (
+                '"_partitions" AS ('
+                f'SELECT 1 AS "_present", {partition_columns} '
+                'FROM "_partition_sample" '
+                'WHERE (SELECT "_partition_count" FROM "_partition_meta") '
+                f"<= {max_partitions})"
+            ),
+            *value_ctes,
+        ]
+        ctes.append(
+            '"_qso_values" AS ('
+            f'SELECT {partition_rows}, MIN(q."_key") AS "_key", '
+            f'COUNT(*) AS "_qso_count"{time_bounds} '
+            f"FROM {value_source} AS q JOIN \"_partitions\" AS p ON {partition_join} "
+            'WHERE q."_matches" AND '
+            'NULLIF(TRIM(CAST(q."_key" AS TEXT)), \'\') IS NOT NULL '
+            f'GROUP BY {partition_group}, q."_key"{key_collation})'
+        )
+        parameters = [*filter_parameters, *scope_parameters]
+        metadata = [(name, value_type) for name, _, value_type in partitions]
+        return ctes, parameters, metadata
+
     async def compare_sets(
         self,
         left: QsoSetSpec,
@@ -2662,6 +2835,39 @@ class QsoQuery:
             result.append(
                 (name, QsoQuery._query_field(name, columns).aggregate_expression())
             )
+        return result
+
+    @staticmethod
+    def _resolve_set_partitions(
+        partition_by: list[str], columns: set[str]
+    ) -> list[tuple[str, str, str]]:
+        if not partition_by:
+            raise InvalidQueryError("partition_by must contain at least one field")
+
+        result: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for name in partition_by:
+            if name in seen:
+                raise InvalidQueryError(f"Duplicate partition_by field: {name}")
+            seen.add(name)
+
+            if dimension := DERIVED_GROUP_BY.get(name):
+                result.append((name, dimension["expression"], dimension["type"]))
+                continue
+
+            field = QSO_FIELDS.get(name)
+            if field is None:
+                raise InvalidQueryError(f"Unknown QSO partition_by field: {name}")
+            if not field.available(columns):
+                raise IncompatibleDatabaseError(
+                    f"QSO field {name!r} is unavailable in this QLog database schema"
+                )
+            if field.cardinality != "one" or field.value_type == "object":
+                raise InvalidQueryError(
+                    f"QSO field {name!r} cannot be used in catalog.match_qso partition_by"
+                )
+            resolved = QsoQuery._query_field(name, columns)
+            result.append((name, resolved.aggregate_expression(), resolved.value_type))
         return result
 
     @staticmethod

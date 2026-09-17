@@ -194,6 +194,7 @@ class UsageLoggingMiddleware(Middleware):
                 "catalog_filters": cls._summarize_filters(
                     arguments.get("catalog_filters")
                 ),
+                "partition_by": cls._identifiers(arguments.get("partition_by")),
                 "relation": cls._identifier(arguments.get("relation", "matched")),
                 "fields": cls._identifiers(arguments.get("fields")),
                 "sort": cls._summarize_sort(arguments.get("sort")),
@@ -429,6 +430,8 @@ class UsageLoggingMiddleware(Middleware):
                     )
                     if isinstance(data["summary"].get(name), int)
                 }
+            if isinstance(data.get("summaries"), list):
+                summary["partitions"] = len(data["summaries"])
         return summary
 
     @staticmethod

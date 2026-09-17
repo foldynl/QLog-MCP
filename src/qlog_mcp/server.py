@@ -10,6 +10,7 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from .catalog import (
+    MAX_MATCH_PARTITION_FIELDS,
     CatalogMatchSort,
     CatalogName,
     CatalogQuery,
@@ -83,8 +84,11 @@ def create_server(
             "available. When a catalog has contacted- and logging-station mappings, use "
             "the QSO schema's side and paired_field metadata to choose the intended one. Use "
             "catalog.match_qso for present/absent set comparisons and fixed per-reference QSO "
-            "statistics with catalog facts. Catalog data supplies facts for analysis; apply "
-            "award or contest rules outside this server. Membership data "
+            "statistics with catalog facts. "
+            "For catalog questions phrased 'for each X', use catalog.match_qso partition_by "
+            "so the server compares every observed QSO partition in one call. "
+            "Catalog data supplies facts for analysis; apply award or contest rules outside "
+            "this server. Membership data "
             "covers only club lists the user downloaded into QLog, not all clubs. Before "
             "analyzing a named club, verify it in membership_clubs; if absent, do not infer "
             "non-membership or use membership fields for that club. Membership catalogs do not "
@@ -304,6 +308,19 @@ def create_server(
                 )
             ),
         ] = None,
+        partition_by: Annotated[
+            list[str] | None,
+            Field(
+                min_length=1,
+                max_length=MAX_MATCH_PARTITION_FIELDS,
+                description=(
+                    "Optional scalar QSO fields or derived QSO group dimensions used to compare "
+                    "the catalog separately for each distinct combination observed after scope "
+                    "but before qso_filters. Use this for questions such as 'for each band and "
+                    "mode'. Omit for one unpartitioned comparison."
+                ),
+            ),
+        ] = None,
         relation: Annotated[
             MatchRelation,
             Field(
@@ -361,7 +378,9 @@ def create_server(
                 "counts distinct non-empty keys in the complete filtered sets, not QSO rows, "
                 "and is unaffected by detail pagination. It always contains catalog_values, "
                 "matched_values, not_matched_values, and qso_only_values. Only qso_count is a "
-                "QSO occurrence count."
+                "QSO occurrence count. With partition_by, summary is replaced by ordered "
+                "summaries containing one complete summary per observed partition, every item "
+                "contains that partition, and pagination remains global across detail items."
             )
         ),
     ]:
@@ -371,6 +390,7 @@ def create_server(
             scope,
             qso_filters,
             catalog_filters,
+            partition_by,
             relation,
             fields,
             sort,

@@ -82,6 +82,11 @@ async def test_public_tool_schemas_are_described() -> None:
     assert "Only qso_count is a QSO occurrence count" in catalog_match.output_schema[
         "description"
     ]
+    partition_by = catalog_match.parameters["properties"]["partition_by"]
+    partition_array = next(item for item in partition_by["anyOf"] if item.get("type") == "array")
+    assert partition_array["minItems"] == 1
+    assert partition_array["maxItems"] == 3
+    assert "before qso_filters" in partition_by["description"]
     assert "truncated=true" in aggregate.output_schema["description"]
     assert "unaffected by relation or pagination" in compare_sets.output_schema[
         "description"
@@ -119,6 +124,7 @@ async def test_public_tool_schemas_are_described() -> None:
         "Use catalog.match_qso when catalog metadata together with per-reference qso_count"
         in server.instructions
     )
+    assert "catalog.match_qso partition_by" in server.instructions
     assert "covers only club lists the user downloaded into QLog" in server.instructions
     assert "if absent, do not infer non-membership" in server.instructions
     assert (

@@ -71,10 +71,12 @@ available columns before each operation, which lets the advertised capability su
 follow QLog schema evolution instead of hard-coding a QLog application release.
 
 `qso.compare_sets` asks `qso.py` to compile two complete scoped and filtered QSO key sets.
-`catalog.match_qso` compiles one catalog set and asks `qso.py` for the other. Both paths
-use the small `setops.py` SQL composer for set relations and complete summary counts, then
-add their domain-specific detail rows and pagination. Results such as “left only” or
-“matched” are neutral relations, not award or contest decisions.
+`catalog.match_qso` compiles one catalog set and asks `qso.py` for the other. With
+`partition_by`, `qso.py` first derives the bounded scalar partitions from the station scope,
+then applies QSO filters inside each partition; the catalog set remains shared. Both paths use
+the small `setops.py` SQL composer for set relations and complete summary counts, then add
+their domain-specific detail rows and pagination. Results such as “left only” or “matched”
+are neutral relations, not award or contest decisions.
 
 ## Source layout
 

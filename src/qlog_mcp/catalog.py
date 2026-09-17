@@ -51,6 +51,8 @@ CATALOG_NAMES: tuple[CatalogName, ...] = (
     "membership_clubs",
 )
 MAX_LIMIT = 1000
+MAX_MATCH_PARTITION_FIELDS = 3
+MAX_MATCH_PARTITIONS = 100
 
 
 class CatalogSort(BaseModel):
@@ -604,6 +606,19 @@ class CatalogQuery:
                         "filtered catalog."
                     ),
                 },
+                "partitioning": {
+                    "semantics": (
+                        "partition_by compares the catalog separately for every distinct "
+                        "combination observed after station scope and before qso_filters. Only "
+                        "scalar QSO fields and derived QSO group dimensions are accepted."
+                    ),
+                    "max_fields": MAX_MATCH_PARTITION_FIELDS,
+                    "max_partitions": MAX_MATCH_PARTITIONS,
+                    "pagination": (
+                        "Summaries are complete for every partition; detail pagination is "
+                        "global in partition order."
+                    ),
+                },
                 "item_semantics": {
                     "matched": (
                         "Catalog rows for keys present in the QSO key set; optional qso_count, "
@@ -684,6 +699,7 @@ class CatalogQuery:
         scope: LogScope,
         qso_filters: FilterGroup | None,
         catalog_filters: FilterGroup | None,
+        partition_by: list[str] | None,
         relation: MatchRelation,
         fields: list[str] | None,
         sort: list[CatalogMatchSort] | None,
@@ -718,6 +734,26 @@ class CatalogQuery:
                 raise InvalidQueryError(
                     f"QSO field {qso_field!r} cannot be matched with catalog {catalog!r}; "
                     f"use one of: {compatible}"
+                )
+            if partition_by is not None:
+                if len(partition_by) > MAX_MATCH_PARTITION_FIELDS:
+                    raise InvalidQueryError(
+                        "partition_by must contain at most "
+                        f"{MAX_MATCH_PARTITION_FIELDS} fields"
+                    )
+                return await self._match_qso_partitioned(
+                    connection,
+                    resolved,
+                    qso_field,
+                    scope,
+                    qso_filters,
+                    catalog_filters,
+                    partition_by,
+                    relation,
+                    fields,
+                    sort,
+                    limit,
+                    offset,
                 )
 
             selected_names = self._resolve_match_fields(resolved, relation, fields)
@@ -861,6 +897,262 @@ class CatalogQuery:
                 "not_matched_values": summary["not_matched_values"],
                 "qso_only_values": summary["qso_only_values"],
             },
+            "items": items,
+            "fields": selected_names,
+            "effective_scope": scope.model_dump(
+                mode="json", exclude_defaults=True, exclude_none=True
+            ),
+            "page": {
+                "limit": limit,
+                "offset": offset,
+                "returned": len(items),
+                "has_more": has_more,
+                "next_offset": offset + limit if has_more else None,
+            },
+        }
+
+    async def _match_qso_partitioned(
+        self,
+        connection: aiosqlite.Connection,
+        resolved: ResolvedCatalog,
+        qso_field: str,
+        scope: LogScope,
+        qso_filters: FilterGroup | None,
+        catalog_filters: FilterGroup | None,
+        partition_by: list[str],
+        relation: MatchRelation,
+        fields: list[str] | None,
+        sort: list[CatalogMatchSort] | None,
+        limit: int,
+        offset: int,
+    ) -> dict[str, Any]:
+        """Compare one catalog with filtered QSO keys inside scoped QSO partitions."""
+        selected_names = self._resolve_match_fields(resolved, relation, fields)
+        order_sql, sort_names = self._compile_match_sort(resolved, relation, sort)
+        key_name = resolved.definition.key_field
+        catalog_sort_names = [
+            name for name in sort_names if name not in MATCH_QSO_STAT_FIELDS
+        ]
+        catalog_names = (
+            [key_name]
+            if relation == MatchRelation.QSO_ONLY
+            else list(dict.fromkeys([*catalog_sort_names, key_name]))
+        )
+        requested_qso_stats = set(selected_names) | set(sort_names)
+        include_qso_stats = bool(requested_qso_stats & MATCH_QSO_STAT_FIELDS)
+        include_time_bounds = bool(
+            requested_qso_stats & {"first_qso", "last_qso"}
+        )
+
+        qso_ctes, parameters, partition_metadata = (
+            await self.qso.compile_partitioned_value_set(
+                connection,
+                scope,
+                qso_filters,
+                qso_field,
+                partition_by,
+                MAX_MATCH_PARTITIONS,
+                include_time_bounds=include_time_bounds,
+            )
+        )
+        partition_aliases = [
+            f"_partition_{index}" for index in range(len(partition_metadata))
+        ]
+        partition_columns = ", ".join(
+            f'p."{name}" AS "{name}"' for name in partition_aliases
+        )
+        partition_order = ", ".join(
+            f'"{name}" COLLATE NOCASE ASC'
+            if partition_metadata[index][1] == "string"
+            else f'"{name}" ASC'
+            for index, name in enumerate(partition_aliases)
+        )
+
+        catalog_parameters: list[Any] = []
+        catalog_where = (
+            self._compile_group(resolved, catalog_filters, catalog_parameters)
+            if catalog_filters is not None
+            else "1 = 1"
+        )
+        parameters.extend(catalog_parameters)
+
+        key_field = resolved.fields[key_name]
+        key_expression = key_field.expression()
+        if key_field.value_type == "string":
+            key_expression = f"NULLIF(TRIM(CAST({key_expression} AS TEXT)), '')"
+        key_collation = " COLLATE NOCASE" if key_field.value_type == "string" else ""
+        case_insensitive = key_field.value_type == "string"
+
+        catalog_columns = ", ".join(
+            f'{resolved.fields[name].expression()} AS "{name}"'
+            for name in catalog_names
+        )
+        grouped_columns = ", ".join(
+            f'MIN("{name}") AS "{name}"' for name in catalog_names
+        )
+        set_summary_join = self._partition_join("p", "s", partition_aliases)
+        ctes = [
+            *qso_ctes,
+            (
+                '"_catalog_rows" AS ('
+                f'SELECT {key_expression} AS "_key", {catalog_columns} '
+                f'FROM "{resolved.source.table}" AS d WHERE ({catalog_where}) '
+                f"AND {key_expression} IS NOT NULL)"
+            ),
+            (
+                '"_catalog_values" AS ('
+                f'SELECT MIN("_key") AS "_key", {grouped_columns} '
+                f'FROM "_catalog_rows" GROUP BY "_key"{key_collation})'
+            ),
+            (
+                '"_catalog_partition_values" AS ('
+                f'SELECT {partition_columns}, c.* FROM "_partitions" AS p '
+                'CROSS JOIN "_catalog_values" AS c)'
+            ),
+            *compile_set_comparison(
+                "_catalog_partition_values",
+                "_qso_values",
+                {
+                    MatchRelation.MATCHED: SetRelation.BOTH,
+                    MatchRelation.NOT_MATCHED: SetRelation.LEFT_ONLY,
+                    MatchRelation.QSO_ONLY: SetRelation.RIGHT_ONLY,
+                }[relation],
+                case_insensitive=case_insensitive,
+                partition_columns=partition_aliases,
+            ),
+            (
+                '"_partition_summaries" AS ('
+                f'SELECT 1 AS "_present", {partition_columns}, '
+                'COALESCE(s."left_values", 0) AS "catalog_values", '
+                'COALESCE(s."both_values", 0) AS "matched_values", '
+                'COALESCE(s."left_only_values", 0) AS "not_matched_values", '
+                'COALESCE(s."right_only_values", 0) AS "qso_only_values" '
+                'FROM "_partitions" AS p LEFT JOIN "_set_summary" AS s ON '
+                f"{set_summary_join})"
+            ),
+            self._match_rows_cte(
+                relation,
+                catalog_names,
+                case_insensitive,
+                include_qso_stats,
+                include_time_bounds,
+                partition_aliases,
+            ),
+            (
+                '"_page" AS (SELECT * FROM "_relation_rows" '
+                f"ORDER BY {partition_order}, {order_sql} LIMIT ? OFFSET ?)"
+            ),
+        ]
+        parameters.extend((limit + 1, offset))
+        item_source = '"_page"'
+        needs_item_details = any(
+            name not in catalog_names and name not in MATCH_QSO_STAT_FIELDS
+            for name in selected_names
+        )
+        if relation != MatchRelation.QSO_ONLY and needs_item_details:
+            item_names = list(dict.fromkeys([*selected_names, *sort_names, key_name]))
+            item_values = ", ".join(
+                (
+                    f'MIN(p."{name}") AS "{name}"'
+                    if name in catalog_names or name in MATCH_QSO_STAT_FIELDS
+                    else f'MIN({resolved.fields[name].expression()}) AS "{name}"'
+                )
+                for name in item_names
+            )
+            item_join_sql = (
+                f'p."_key" COLLATE NOCASE = {key_expression} COLLATE NOCASE'
+                if key_field.value_type == "string"
+                else f'p."_key" = {key_expression}'
+            )
+            item_partition_columns = ", ".join(
+                f'p."{name}" AS "{name}"' for name in partition_aliases
+            )
+            item_group = ", ".join(
+                [*(f'p."{name}"' for name in partition_aliases), 'p."_key"']
+            )
+            ctes.append(
+                '"_items" AS (SELECT 1 AS "_present", '
+                f"{item_partition_columns}, {item_values} FROM \"_page\" AS p "
+                f'JOIN "{resolved.source.table}" AS d ON {item_join_sql} '
+                f"WHERE ({catalog_where}) GROUP BY {item_group})"
+            )
+            parameters.extend(catalog_parameters)
+            item_source = '"_items"'
+
+        item_columns = ", ".join(
+            f'p."{name}" AS "_item_{name}"' for name in selected_names
+        )
+        summary_partition_columns = ", ".join(
+            f's."{name}" AS "{name}"' for name in partition_aliases
+        )
+        item_summary_join = self._partition_join("s", "p", partition_aliases)
+        final_partition_order = ", ".join(
+            f's."{name}" COLLATE NOCASE ASC'
+            if partition_metadata[index][1] == "string"
+            else f's."{name}" ASC'
+            for index, name in enumerate(partition_aliases)
+        )
+        sql = (
+            "WITH RECURSIVE "
+            + ", ".join(ctes)
+            + ' SELECT m."_partition_count", '
+            + 's."_present" AS "_partition_present", '
+            + f"{summary_partition_columns}, "
+            + 's."catalog_values", s."matched_values", '
+            + 's."not_matched_values", s."qso_only_values", '
+            + f'p."_present" AS "_item_present", {item_columns} '
+            + 'FROM "_partition_meta" AS m '
+            + 'LEFT JOIN "_partition_summaries" AS s ON 1 = 1 '
+            + f"LEFT JOIN {item_source} AS p ON {item_summary_join} "
+            + f"ORDER BY {final_partition_order}, {order_sql}"
+        )
+        rows = await self._execute_sql(connection, sql, parameters)
+        if rows[0]["_partition_count"] > MAX_MATCH_PARTITIONS:
+            raise InvalidQueryError(
+                "partition_by produced more than "
+                f"{MAX_MATCH_PARTITIONS} partitions; narrow the scope or use fewer fields"
+            )
+
+        summaries: list[dict[str, Any]] = []
+        seen_partitions: set[tuple[Any, ...]] = set()
+        for row in rows:
+            if row["_partition_present"] is None:
+                continue
+            identity = tuple(row[name] for name in partition_aliases)
+            if identity in seen_partitions:
+                continue
+            seen_partitions.add(identity)
+            summaries.append(
+                {
+                    "partition": self._serialize_partition(
+                        row, partition_aliases, partition_metadata
+                    ),
+                    "summary": {
+                        "catalog_values": row["catalog_values"],
+                        "matched_values": row["matched_values"],
+                        "not_matched_values": row["not_matched_values"],
+                        "qso_only_values": row["qso_only_values"],
+                    },
+                }
+            )
+
+        detail_rows = [row for row in rows if row["_item_present"] is not None]
+        has_more = len(detail_rows) > limit
+        items = []
+        for row in detail_rows[:limit]:
+            item = self._serialize_match_row(row, selected_names, resolved, relation)
+            items.append(
+                {
+                    "partition": self._serialize_partition(
+                        row, partition_aliases, partition_metadata
+                    ),
+                    **item,
+                }
+            )
+        return {
+            "relation": relation.value,
+            "partition_by": partition_by,
+            "summaries": summaries,
             "items": items,
             "fields": selected_names,
             "effective_scope": scope.model_dump(
@@ -1197,7 +1489,15 @@ class CatalogQuery:
         case_insensitive: bool,
         include_qso_stats: bool,
         include_time_bounds: bool,
+        partition_columns: list[str] | None = None,
     ) -> str:
+        partitions = partition_columns or []
+        partition_select = "".join(
+            f's."{name}" AS "{name}", ' for name in partitions
+        )
+        partition_join = "".join(
+            f' AND s."{name}" IS q."{name}"' for name in partitions
+        )
         relation_key = 's."_key"'
         catalog_key = 'c."_key"'
         qso_key = 'q."_key"'
@@ -1208,9 +1508,10 @@ class CatalogQuery:
             qso_join = f"{relation_key} COLLATE NOCASE = {qso_key} COLLATE NOCASE"
         if relation == MatchRelation.QSO_ONLY:
             return (
-                '"_relation_rows" AS (SELECT 1 AS "_present", q."_key" AS "key", '
+                f'"_relation_rows" AS (SELECT 1 AS "_present", {partition_select}'
+                'q."_key" AS "key", '
                 'q."_qso_count" AS "qso_count" FROM "_set_relation_values" AS s '
-                f'JOIN "_qso_values" AS q ON {qso_join})'
+                f'JOIN "_qso_values" AS q ON {qso_join}{partition_join})'
             )
         columns = ", ".join(f'c."{name}" AS "{name}"' for name in selected_names)
         qso_columns = ""
@@ -1221,15 +1522,38 @@ class CatalogQuery:
                     ', q."_first_qso" AS "first_qso", q."_last_qso" AS "last_qso"'
                 )
         return (
-            f'"_relation_rows" AS (SELECT 1 AS "_present", c."_key", {columns}'
+            f'"_relation_rows" AS (SELECT 1 AS "_present", {partition_select}'
+            f'c."_key", {columns}'
             f'{qso_columns} '
             'FROM "_set_relation_values" AS s JOIN "_catalog_values" AS c '
             + (
-                f'ON {catalog_join} LEFT JOIN "_qso_values" AS q ON {qso_join})'
+                f'ON {catalog_join} LEFT JOIN "_qso_values" AS q '
+                f'ON {qso_join}{partition_join})'
                 if include_qso_stats
                 else f'ON {catalog_join})'
             )
         )
+
+    @staticmethod
+    def _partition_join(
+        left_alias: str, right_alias: str, partition_columns: list[str]
+    ) -> str:
+        return " AND ".join(
+            f'{left_alias}."{name}" IS {right_alias}."{name}"'
+            for name in partition_columns
+        )
+
+    @staticmethod
+    def _serialize_partition(
+        row: aiosqlite.Row,
+        aliases: list[str],
+        metadata: list[tuple[str, str]],
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for alias, (name, value_type) in zip(aliases, metadata, strict=True):
+            value = row[alias]
+            result[name] = bool(value) if value_type == "boolean" and value is not None else value
+        return result
 
     @staticmethod
     def _serialize_match_row(

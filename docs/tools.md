@@ -162,6 +162,13 @@ The relation names describe set membership only:
 - `not_matched` returns catalog keys absent from that QSO set;
 - `qso_only` returns non-empty QSO keys absent from the filtered catalog.
 
+Optional `partition_by` compares the same filtered catalog separately for every distinct
+combination of scalar QSO dimensions observed after `scope` but before `qso_filters`. For
+example, `partition_by: ["band", "mode"]` includes a band/mode combination even when its
+QSOs are all removed by a confirmation filter. It accepts up to three scalar QSO fields or
+derived QSO group dimensions. A request producing more than 100 combinations is rejected;
+narrow the scope or use fewer dimensions. List-valued and object fields are not accepted.
+
 For `matched` and `not_matched`, `fields` may contain catalog semantic fields and the
 optional QSO statistics `qso_count`, `first_qso`, and `last_qso`. The same three names are
 valid in `sort`, so a request such as `sort: [{"field": "qso_count", "direction": "desc"}]`
@@ -179,6 +186,12 @@ use deterministic `limit`/`offset` pagination. These four summary values count d
 non-empty keys, not QSO rows. An item `qso_count` always counts QSO occurrences;
 `qso_only` includes it by default. `qso_only` deliberately returns no QSO content; use
 `qso.query` with the returned key and `one_per_group` when evidence is needed.
+
+Without `partition_by`, the response has the single `summary` object above. With
+`partition_by`, it instead has an ordered `summaries` array. Each entry contains
+`partition` and its complete `summary`; every detail item contains the same nested
+`partition`. Detail pagination is global and deterministic: partition dimensions ascending,
+then `sort`, then the comparison key. Summaries remain complete on every detail page.
 
 For example, after the LLM has selected acceptable confirmation states from external
 DXCC rules, it can ask for the filtered catalog complement without transferring QSOs:
@@ -198,11 +211,17 @@ DXCC rules, it can ask for the filtered catalog complement without transferring 
   "catalog_filters": {
     "conditions": [{"field": "deleted", "op": "eq", "value": false}]
   },
+  "partition_by": ["band", "mode"],
   "relation": "not_matched",
   "fields": ["code", "name", "prefix", "continent"],
   "sort": [{"field": "name", "direction": "asc"}]
 }
 ```
+
+This returns the current catalog complement separately for every band/mode combination in
+the selected station scope. Because the compared QSO population contains confirmations,
+QSO statistics on `not_matched` rows would be zero and null; omit them unless the question
+instead compares an unfiltered worked population.
 
 The server does not decide that `matched` means worked or confirmed, or that
 `not_matched` means needed for an award. See [analysis examples](analysis-examples.md) for

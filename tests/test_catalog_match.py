@@ -1,6 +1,7 @@
 """Tests for neutral catalog/QSO set comparisons."""
 
 import json
+import sqlite3
 
 from fastmcp import Client
 
@@ -53,6 +54,233 @@ async def test_matches_scalar_dxcc_keys_and_applies_independent_filters(
     assert matched.data["items"] == [{"code": 339, "name": "Japan"}]
     assert not_matched.data["items"] == [{"code": 291, "name": "United States"}]
     assert qso_only.data["items"] == []
+
+
+async def test_partitions_catalog_comparison_before_qso_filters(
+    catalog_match_database,
+) -> None:
+    arguments = {
+        "catalog": "dxcc",
+        "qso_field": "dxcc",
+        "scope": {"station_scope": "all"},
+        "qso_filters": {
+            "logic": "or",
+            "conditions": [
+                {"field": "lotw_received", "op": "eq", "value": "Y"},
+                {"field": "qsl_received", "op": "eq", "value": "Y"},
+            ],
+        },
+        "catalog_filters": {
+            "conditions": [{"field": "deleted", "op": "eq", "value": False}]
+        },
+        "partition_by": ["band", "mode"],
+        "relation": "not_matched",
+        "fields": ["code", "name"],
+        "limit": 3,
+    }
+    async with Client(create_server(catalog_match_database)) as client:
+        first = await client.call_tool("catalog.match_qso", arguments)
+        second = await client.call_tool(
+            "catalog.match_qso",
+            {**arguments, "offset": first.data["page"]["next_offset"]},
+        )
+
+    expected_summaries = [
+        {
+            "partition": {"band": "15m", "mode": "FT8"},
+            "summary": {
+                "catalog_values": 2,
+                "matched_values": 1,
+                "not_matched_values": 1,
+                "qso_only_values": 0,
+            },
+        },
+        {
+            "partition": {"band": "20m", "mode": "CW"},
+            "summary": {
+                "catalog_values": 2,
+                "matched_values": 1,
+                "not_matched_values": 1,
+                "qso_only_values": 0,
+            },
+        },
+        {
+            "partition": {"band": "20m", "mode": "SSB"},
+            "summary": {
+                "catalog_values": 2,
+                "matched_values": 0,
+                "not_matched_values": 2,
+                "qso_only_values": 0,
+            },
+        },
+    ]
+    assert first.data["partition_by"] == ["band", "mode"]
+    assert first.data["summaries"] == second.data["summaries"] == expected_summaries
+    assert first.data["items"] == [
+        {
+            "partition": {"band": "15m", "mode": "FT8"},
+            "code": 291,
+            "name": "United States",
+        },
+        {
+            "partition": {"band": "20m", "mode": "CW"},
+            "code": 291,
+            "name": "United States",
+        },
+        {
+            "partition": {"band": "20m", "mode": "SSB"},
+            "code": 291,
+            "name": "United States",
+        },
+    ]
+    assert first.data["page"]["has_more"] is True
+    assert second.data["items"] == [
+        {
+            "partition": {"band": "20m", "mode": "SSB"},
+            "code": 339,
+            "name": "Japan",
+        }
+    ]
+
+
+async def test_partitioned_list_keys_keep_item_semantics(
+    catalog_match_database,
+) -> None:
+    async with Client(create_server(catalog_match_database)) as client:
+        result = await client.call_tool(
+            "catalog.match_qso",
+            {
+                "catalog": "pota",
+                "qso_field": "pota_ref",
+                "scope": {"station_scope": "all"},
+                "partition_by": ["band"],
+                "relation": "qso_only",
+            },
+        )
+
+    assert result.data["summaries"] == [
+        {
+            "partition": {"band": "15m"},
+            "summary": {
+                "catalog_values": 3,
+                "matched_values": 0,
+                "not_matched_values": 3,
+                "qso_only_values": 1,
+            },
+        },
+        {
+            "partition": {"band": "20m"},
+            "summary": {
+                "catalog_values": 3,
+                "matched_values": 2,
+                "not_matched_values": 1,
+                "qso_only_values": 0,
+            },
+        },
+    ]
+    assert result.data["items"] == [
+        {"partition": {"band": "15m"}, "key": "JA-0001", "qso_count": 1}
+    ]
+
+
+async def test_partitioned_match_keeps_qso_statistics_inside_each_partition(
+    catalog_match_database,
+) -> None:
+    async with Client(create_server(catalog_match_database)) as client:
+        result = await client.call_tool(
+            "catalog.match_qso",
+            {
+                "catalog": "dxcc",
+                "qso_field": "dxcc",
+                "scope": {"station_scope": "all"},
+                "partition_by": ["band", "mode"],
+                "relation": "matched",
+                "fields": ["code", "qso_count", "first_qso", "last_qso"],
+            },
+        )
+
+    assert result.data["items"] == [
+        {
+            "partition": {"band": "15m", "mode": "FT8"},
+            "code": 339,
+            "qso_count": 1,
+            "first_qso": "2026-01-15T12:30:00Z",
+            "last_qso": "2026-01-15T12:30:00Z",
+        },
+        {
+            "partition": {"band": "20m", "mode": "CW"},
+            "code": 339,
+            "qso_count": 2,
+            "first_qso": "2025-12-31T23:59:00Z",
+            "last_qso": "2026-02-20T08:00:00Z",
+        },
+        {
+            "partition": {"band": "20m", "mode": "SSB"},
+            "code": 291,
+            "qso_count": 1,
+            "first_qso": "2026-02-21T09:00:00Z",
+            "last_qso": "2026-02-21T09:00:00Z",
+        },
+    ]
+
+
+async def test_partitioned_match_returns_empty_result_for_empty_scope(
+    catalog_match_database,
+) -> None:
+    async with Client(create_server(catalog_match_database)) as client:
+        result = await client.call_tool(
+            "catalog.match_qso",
+            {
+                "catalog": "dxcc",
+                "qso_field": "dxcc",
+                "scope": {"station_scope": "all", "date_from": "2030-01-01"},
+                "partition_by": ["band"],
+                "relation": "not_matched",
+            },
+        )
+
+    assert result.data["summaries"] == []
+    assert result.data["items"] == []
+    assert result.data["page"]["has_more"] is False
+
+
+async def test_partitioned_match_rejects_unsupported_or_excessive_partitions(
+    catalog_match_database,
+) -> None:
+    connection = sqlite3.connect(catalog_match_database)
+    connection.executemany(
+        """
+        INSERT INTO contacts (
+            id, start_time, callsign, band, mode, dxcc, station_callsign
+        ) VALUES (?, '2026-03-01T00:00:00Z', ?, '20m', 'CW', 291, 'OK1MLG')
+        """,
+        [(1000 + index, f"TEST{index}") for index in range(101)],
+    )
+    connection.commit()
+    connection.close()
+
+    base = {
+        "catalog": "dxcc",
+        "qso_field": "dxcc",
+        "scope": {"station_scope": "all"},
+        "relation": "matched",
+    }
+    async with Client(create_server(catalog_match_database)) as client:
+        unsupported = await client.call_tool(
+            "catalog.match_qso",
+            {**base, "partition_by": ["pota_ref"]},
+            raise_on_error=False,
+        )
+        excessive = await client.call_tool(
+            "catalog.match_qso",
+            {**base, "partition_by": ["callsign"]},
+            raise_on_error=False,
+        )
+
+    assert unsupported.is_error is True
+    assert "cannot be used" in unsupported.content[0].text
+    assert excessive.is_error is True
+    assert "more than 100 partitions" in excessive.content[0].text
 
 
 async def test_all_relations_and_complete_paginated_summary(
@@ -431,3 +659,25 @@ async def test_usage_log_keeps_match_values_private_and_records_one_sql(
         "not_matched_values": 1,
         "qso_only_values": 1,
     }
+
+
+async def test_usage_log_summarizes_catalog_partitions(
+    catalog_match_database, tmp_path
+) -> None:
+    usage_log = tmp_path / "partition-usage.jsonl"
+    async with Client(create_server(catalog_match_database, usage_log)) as client:
+        await client.call_tool(
+            "catalog.match_qso",
+            {
+                "catalog": "dxcc",
+                "qso_field": "dxcc",
+                "scope": {"station_scope": "all"},
+                "partition_by": ["band", "mode"],
+                "relation": "matched",
+            },
+        )
+
+    event = json.loads(usage_log.read_text())
+    assert event["arguments"]["partition_by"] == ["band", "mode"]
+    assert event["result"]["partitions"] == 3
+    assert len(event["sql"]) == 1

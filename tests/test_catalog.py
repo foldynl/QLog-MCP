@@ -75,6 +75,9 @@ async def test_catalog_schema_discovers_semantic_capabilities(catalog_qlog_datab
         "not_matched_values",
         "qso_only_values",
     }
+    assert schema["match_qso"]["partitioning"]["max_fields"] == 3
+    assert schema["match_qso"]["partitioning"]["max_partitions"] == 100
+    assert "before qso_filters" in schema["match_qso"]["partitioning"]["semantics"]
     assert schema["match_qso"]["item_semantics"]["qso_only"].endswith(
         "not QSO rows."
     )
