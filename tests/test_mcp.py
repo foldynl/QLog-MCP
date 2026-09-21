@@ -51,8 +51,18 @@ def test_cli_prints_package_version(capsys) -> None:
 
 
 async def test_server_registers_public_tool_surface() -> None:
-    tools = await create_server().list_tools()
+    async with Client(create_server()) as client:
+        tools = await client.list_tools()
+
     assert {tool.name for tool in tools} == EXPECTED_TOOLS
+    assert all(
+        tool.annotations is not None
+        and tool.annotations.read_only_hint is True
+        and tool.annotations.destructive_hint is False
+        and tool.annotations.idempotent_hint is True
+        and tool.annotations.open_world_hint is False
+        for tool in tools
+    )
 
 
 async def test_public_tool_schemas_are_described() -> None:

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from .catalog import (
@@ -40,6 +41,13 @@ from .qso import (
 )
 from .setops import SetRelation
 from .usage_log import UsageLoggingMiddleware
+
+READ_ONLY_TOOL = ToolAnnotations(
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
 
 
 def create_server(
@@ -107,6 +115,7 @@ def create_server(
             "Return the log date range and the available station callsign/grid pairs, "
             "operators, and station profiles. Call this before the first QSO operation."
         ),
+        annotations=READ_ONLY_TOOL,
     )
     async def get_context() -> Annotated[
         dict[str, Any],
@@ -123,6 +132,7 @@ def create_server(
     @server.tool(
         name="qlog.get_capabilities",
         description="Return capabilities supported by this QLog MCP server.",
+        annotations=READ_ONLY_TOOL,
     )
     def get_capabilities() -> Annotated[
         dict[str, Any],
@@ -160,6 +170,7 @@ def create_server(
             "once per needed domain for the current server connection and reuse the result; "
             "repeat only after the server or database changes, or after a compatibility error."
         ),
+        annotations=READ_ONLY_TOOL,
     )
     async def get_schema(
         domain: Annotated[
@@ -188,6 +199,7 @@ def create_server(
             "Search a QLog reference directory through semantic fields. This returns catalog "
             "facts and does not apply award, activity, or contest rules."
         ),
+        annotations=READ_ONLY_TOOL,
     )
     async def catalog_query(
         catalog: Annotated[
@@ -260,6 +272,7 @@ def create_server(
             "for both catalog and QSO domains first. Relations describe only set membership; "
             "this tool does not apply award, activity, or contest rules."
         ),
+        annotations=READ_ONLY_TOOL,
     )
     async def catalog_match_qso(
         catalog: Annotated[
@@ -406,6 +419,7 @@ def create_server(
             "covered by the stored membership interval on that QSO date. This is evidence, not "
             "award-credit determination."
         ),
+        annotations=READ_ONLY_TOOL,
     )
     async def membership_match_qso(
         club: Annotated[
@@ -498,6 +512,7 @@ def create_server(
             "filters, projection, sorting, and pagination. List fields support exact semantic "
             "item operators; contains remains a raw-text diagnostic fallback."
         ),
+        annotations=READ_ONLY_TOOL,
     )
     async def query(
         scope: Annotated[
@@ -572,6 +587,7 @@ def create_server(
             "returns aggregate evidence and never individual QSOs or contest/award decisions. "
             "Read set_comparison in the QSO schema for compatible keys and result semantics."
         ),
+        annotations=READ_ONLY_TOOL,
     )
     async def compare_sets(
         left: Annotated[
@@ -655,6 +671,7 @@ def create_server(
             "All returned field aliases must be unique regardless of letter case. "
             "Use qlog.get_schema for field-specific functions and exact processing semantics."
         ),
+        annotations=READ_ONLY_TOOL,
     )
     async def aggregate(
         scope: Annotated[
