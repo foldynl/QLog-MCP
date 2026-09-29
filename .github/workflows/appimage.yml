@@ -1,7 +1,10 @@
-name: AppImage
-run-name: AppImage ${{ github.ref_name }}
+name: CI and AppImage
+run-name: CI and AppImage ${{ github.ref_name }}
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
@@ -33,10 +36,12 @@ jobs:
           version: "0.12.10"
           enable-cache: true
       - run: uv sync --locked
+      - run: uv build --locked
       - run: uv run pytest
       - run: uv run ruff check .
 
   appimage:
+    if: github.event_name != 'pull_request'
     name: AppImage ${{ needs.checks.outputs.version }} (${{ matrix.architecture }})
     needs: checks
     strategy:
