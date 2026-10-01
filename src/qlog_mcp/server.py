@@ -23,6 +23,7 @@ from .catalog import (
 )
 from .database import Database
 from .discovery import discover_database
+from .errors import InvalidQueryError
 from .qso import (
     MAX_AGGREGATE_CALCULATIONS,
     AggregateCalculation,
@@ -39,6 +40,7 @@ from .qso import (
     SetComparisonSort,
     SortSpec,
 )
+from .runtime import LiveContext, LiveSources, RuntimeClient, SourceSelection
 from .setops import SetRelation
 from .usage_log import UsageLoggingMiddleware
 
@@ -58,12 +60,36 @@ def create_server(
     database = Database(discover_database(database_path))
     qso = QsoQuery(database)
     catalogs = CatalogQuery(database, qso)
+    runtime = RuntimeClient()
 
     # LLM clients otherwise tend to call qlog.get_schema before every operation even
     # though its capability snapshot normally stays valid for the server connection.
     server = FastMCP(
         name="QLog MCP",
         instructions=(
+            "For factual questions about the current state of QLog or its connected devices, "
+            "call qlog.get_live_context before answering. If this tool is available, try it "
+            "before claiming that live state cannot be checked. Questions about recorded "
+            "contacts, including the most recent QSO, use the historical QSO tools. "
+            "When QLog is not running, say so plainly in the user's language and ask them "
+            "to start QLog. If a live read fails, report current state as unknown; provide "
+            "a previous reading only when the user asks for the last known state. "
+            "Before the first live read, call qlog.list_live_sources to learn which sources "
+            "are available and what each covers. Select only sources needed for the question "
+            "and pass their names as sources to qlog.get_schema(domain='runtime') and "
+            "qlog.get_live_context. Reuse the source list and schema for sources already "
+            "known; fetch schema for a newly needed source and refresh metadata when QLog "
+            "restarts, providers change or a source is rejected. Do not request all sources "
+            "merely to answer a question about one subsystem. Read the selected field schema "
+            "for meanings, types and units. "
+            "Live context reads the latest state held by QLog, without new hardware polling; "
+            "live values can change at any time, including between consecutive user messages. "
+            "For each new question about current state, call qlog.get_live_context again "
+            "for the relevant sources. Never assume a previous reading is still current. "
+            "Source lists and field schemas may be reused; live values must be read again. "
+            "Interpret null as unavailable "
+            "or unknown and check per-field issues; null alone does not mean disconnected. "
+            "Live state and radio-control profiles do not choose or change historical QSO scope. "
             "Before the first qso.query, qso.aggregate, or qso.compare_sets call, use "
             "qlog.get_context and ask "
             "the user to choose "
@@ -76,10 +102,11 @@ def create_server(
             "For questions phrased 'for each X, return the top N Y', use qso.aggregate "
             "top_per_group; do not use one_per_group, which deduplicates individual QSOs before "
             "metrics are calculated. "
-            "Call qlog.get_schema once for each domain "
-            "when first needed and reuse that capability snapshot throughout the conversation. "
+            "Call qlog.get_schema once for each QSO/catalog domain and each needed runtime "
+            "source, and reuse that capability snapshot throughout the conversation. "
             "Do not call it before every operation; refresh it only after the MCP server or "
-            "database changes, or after a compatibility error suggests that capabilities "
+            "database changes, when QLog restarts or its providers change for the runtime "
+            "domain, or after a compatibility error suggests that capabilities "
             "changed. Use the QSO schema to select group_by dimensions and functions supported "
             "by each metric field. For a "
             "list-valued field, use has/has_any/has_all for semantic item matching and "
@@ -112,8 +139,10 @@ def create_server(
     @server.tool(
         name="qlog.get_context",
         description=(
-            "Return the log date range and the available station callsign/grid pairs, "
-            "operators, and station profiles. Call this before the first QSO operation."
+            "Return historical logbook context from the database: log date range, available "
+            "station callsign/grid pairs, operators and logging station profiles. Call this "
+            "before the first QSO operation to choose a station scope; use qlog.get_live_context "
+            "for current radio or application state."
         ),
         annotations=READ_ONLY_TOOL,
     )
@@ -130,6 +159,70 @@ def create_server(
         return await qso.context()
 
     @server.tool(
+        name="qlog.list_live_sources",
+        description=(
+            "Discover the live data sources registered in a running QLog instance before "
+            "the first live-state question. Returns source names and English descriptions "
+            "of what state each exposes, when to use it and its limitations. It does not "
+            "collect values or poll hardware: a listed source does not prove a device is "
+            "connected. Choose only sources relevant to the question, get their field "
+            "definitions using qlog.get_schema(domain='runtime', sources=[...]), then "
+            "read them with qlog.get_live_context(sources=[...]). Reuse this list until "
+            "QLog restarts, providers change or a requested source is rejected. Requires "
+            "running QLog; no database or station scope is needed."
+        ),
+        annotations=READ_ONLY_TOOL,
+    )
+    async def list_live_sources() -> Annotated[
+        LiveSources,
+        Field(
+            description=(
+                "Available source names and QLog-owned descriptions in sources. Metadata "
+                "only: use selected-source schema for field meanings and live context for "
+                "current values. The list is not evidence of a ready device connection."
+            )
+        ),
+    ]:
+        return await runtime.sources()
+
+    @server.tool(
+        name="qlog.get_live_context",
+        description=(
+            "Use this tool before answering factual questions about the current state of "
+            "QLog or its connected devices. Try it before claiming that live state cannot "
+            "be checked. Live values can change at any time, including between consecutive "
+            "user messages. For each new question about current state, call this tool again "
+            "for the relevant sources. Never assume a previous reading is still current. "
+            "Source lists and field schemas may be reused; live values must be read again. "
+            "It reads the latest state held by QLog, such as its radio "
+            "connection, VFO frequency and operating mode. Returns values and per-field "
+            "collection issues, not historical QSOs. Discover sources with qlog.list_live_sources "
+            "and request only those relevant to the question. First use "
+            "qlog.get_schema(domain='runtime', sources=[...]) for their meanings and units. "
+            "For example, select ['rig'] for the currently tuned amateur band, then derive "
+            "the band from the advertised main VFO frequency in Hz. This reads only selected "
+            "in-memory provider snapshots without "
+            "new hardware polling or changing QLog. Unavailable or unknown values are null; "
+            "partial collection failures preserve other providers' values. Requires running "
+            "QLog, but no database or station scope. If QLog is not running, tell the user "
+            "to start QLog. If this tool fails, current state is unknown; do not answer "
+            "from a previous reading unless the user asks for the last known state."
+        ),
+        annotations=READ_ONLY_TOOL,
+    )
+    async def get_live_context(sources: SourceSelection = None) -> Annotated[
+        LiveContext,
+        Field(
+            description=(
+                "Latest snapshots from requested QLog sources in values, with collection failures "
+                "in issues keyed by the affected field names. No cross-provider atomicity "
+                "or hardware refresh is implied."
+            )
+        ),
+    ]:
+        return await runtime.context(sources)
+
+    @server.tool(
         name="qlog.get_capabilities",
         description="Return capabilities supported by this QLog MCP server.",
         annotations=READ_ONLY_TOOL,
@@ -140,7 +233,8 @@ def create_server(
             description=(
                 "Object containing server, stage, database_configured, QSO support flags and "
                 "semantic field names, supported catalog operations and names, and membership "
-                "roster matching. Membership data remains limited to lists downloaded into QLog; "
+                "roster matching, and runtime tool support (not QLog availability). "
+                "Membership data remains limited to lists downloaded into QLog; "
                 "use qlog.get_schema to verify database fields and catalogs."
             )
         ),
@@ -161,22 +255,39 @@ def create_server(
                 "names": catalogs.supported_catalog_names(),
             },
             "membership": {"match_qso": True},
+            "runtime": {
+                "get_live_context": True,
+                "schema": True,
+                "list_live_sources": True,
+                "source_selection": True,
+            },
         }
 
     @server.tool(
         name="qlog.get_schema",
         description=(
-            "Describe available semantic fields and operations for QSO or catalog data. Call "
+            "Describe available semantic fields and operations for QSO, catalog or runtime "
+            "data. Call "
             "once per needed domain for the current server connection and reuse the result; "
-            "repeat only after the server or database changes, or after a compatibility error."
+            "repeat after the server or database changes, after a compatibility error, or "
+            "when QLog restarts or its runtime providers change. For runtime, request only "
+            "needed sources advertised by qlog.list_live_sources; reuse schema for known "
+            "sources and fetch definitions for a newly needed source."
         ),
         annotations=READ_ONLY_TOOL,
     )
     async def get_schema(
         domain: Annotated[
-            Literal["qso", "catalog"],
-            Field(description="Schema domain to describe: 'qso' or 'catalog'."),
+            Literal["qso", "catalog", "runtime"],
+            Field(
+                description=(
+                    "Use 'qso' for recorded contacts and their query operations, "
+                    "'catalog' for stored reference directories, or 'runtime' for fields "
+                    "exposed by providers in a running QLog instance. Default: 'qso'."
+                )
+            ),
         ] = "qso",
+        sources: SourceSelection = None,
     ) -> Annotated[
         dict[str, Any],
         Field(
@@ -184,11 +295,19 @@ def create_server(
                 "Object keyed by domain. The qso schema describes QSO fields, filtering, and "
                 "aggregation. The catalog schema lists available reference directories, "
                 "their semantic fields, operators, defaults, source capability, and compatible "
-                "QSO fields. Treat this as a reusable capability snapshot for the current "
+                "QSO fields. The runtime schema contains fields keyed by their names, with "
+                "type, English description, nullable, source and optional unit metadata from a "
+                "running QLog instance. It returns metadata, not current values; use "
+                "qlog.get_live_context for values. Runtime schema needs no database. "
+                "Treat this as a reusable capability snapshot for the current "
                 "server connection."
             )
         ),
     ]:
+        if domain == "runtime":
+            return {domain: await runtime.schema(sources)}
+        if sources is not None:
+            raise InvalidQueryError("sources is supported only for domain='runtime'")
         if domain == "catalog":
             return {domain: await catalogs.schema()}
         return {domain: await qso.schema()}

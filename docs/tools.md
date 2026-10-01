@@ -9,6 +9,8 @@ This page is the precise tool contract. For the user-oriented view, start with t
 | Need | Tool | Why |
 | --- | --- | --- |
 | Choose a callsign/profile and see the log bounds | `qlog.get_context` | Returns dates, station callsign/grid pairs, operators, and profiles |
+| Discover available live subsystems | `qlog.list_live_sources` | Returns source names and descriptions without collecting state |
+| Read the current radio state | `qlog.get_live_context(sources=["rig"])` | Reads only selected providers from a running QLog instance |
 | Learn what this server/database can support | `qlog.get_capabilities`, `qlog.get_schema` | Separates server features from fields available in this database |
 | Inspect one or a small page of actual QSOs | `qso.query` | Returns selected semantic fields with filters, sorting, and pagination |
 | Count or compare many QSOs | `qso.aggregate` | Calculates metrics in SQLite and returns aggregate rows only |
@@ -17,9 +19,11 @@ This page is the precise tool contract. For the user-oriented view, start with t
 | Find catalog entries present or absent in the log | `catalog.match_qso` | Compares distinct semantic keys without returning QSO content |
 | Compare a downloaded club roster with QSOs | `membership.match_qso` | Uses each QSO date |
 
-The nine public tools are:
+The eleven public tools are:
 
 - `qlog.get_context`
+- `qlog.get_live_context`
+- `qlog.list_live_sources`
 - `qlog.get_capabilities`
 - `qlog.get_schema`
 - `catalog.query`
@@ -43,11 +47,109 @@ actual contact rows, a last/first record, or evidence for a summary. Catalog res
 reference facts. They do not mean “worked”, “confirmed”, “needed”, “valid”, or “award
 credit” until the caller applies the relevant external rules.
 
-`qlog.get_schema` accepts `qso` or `catalog` as its domain. It describes semantic
+`qlog.get_schema` accepts `qso`, `catalog` or `runtime` as its domain. It describes semantic
 fields and operations without exposing the physical SQLite schema. Call each needed domain
 once per server connection and reuse the result. Refresh it only after the server or database
 changes, or when a compatibility error indicates that the stored capability snapshot may be
 stale.
+
+For the runtime domain, request schema for selected sources and reuse each source's definitions.
+Fetch definitions when another source is first needed. Refresh the source list and schema when
+QLog restarts, its providers change, or a source selection is rejected.
+
+## Live runtime context
+
+First call `qlog.list_live_sources()` to discover available source names and their English
+QLog-owned descriptions. These explain the included state, useful questions and limitations;
+the list does not collect values or prove that a device is connected. For example:
+
+```json
+{
+  "sources": {
+    "rig": {
+      "description": "Latest state of the transceiver controlled by QLog: ready radio-driver connection, active radio-control profile, main VFO frequency in Hz and operating mode. Use for current connection, tuned frequency, band or mode. Reads state already held by QLog without polling hardware. Does not report PTT, split transmit frequency, power, antenna or historical QSOs."
+    }
+  }
+}
+```
+
+Reuse this metadata and choose only sources needed for the question. For example, to answer
+which amateur band the radio is tuned to, call
+`qlog.get_schema(domain="runtime", sources=["rig"])`, then
+`qlog.get_live_context(sources=["rig"])`. Interpret frequency in the advertised units;
+`rig_frequency` is in Hz, and 14074000 Hz is 14.074 MHz.
+
+Both schema and live context accept an optional non-empty list `sources`. Names come from
+QLog, not a fixed MCP enum; several names can be selected together. Unknown names are rejected
+by QLog, and invalid shapes are rejected before collecting state. Omitted or null selection
+preserves all-source behavior for backward compatibility; an empty list is invalid.
+On `qlog.get_schema`, `sources` is supported only with `domain="runtime"`.
+QLog requests snapshots only from selected providers in their owning threads; other providers
+are not read or awaited. This is not output filtering in MCP.
+
+The selected live context retains the existing envelope:
+
+```json
+{
+  "values": {
+    "rig_connected": true,
+    "rig_profile": "Home",
+    "rig_frequency": 14074000,
+    "rig_mode": "FT8"
+  },
+  "issues": {}
+}
+```
+
+`qlog.get_schema(domain="runtime")` returns `{"runtime": {"fields": {...}}}`. Each field
+must include `type` and `description` as strings and `nullable` as a boolean. Optional `unit`
+must be a string when present. QLog also supplies `source` as a string identifying the field's
+provider; older schemas without this metadata remain accepted. Invalid metadata produces a protocol error; additional metadata
+is preserved. Read the advertised units: `rig_frequency` is in Hz. New QLog providers appear
+through the same tools and source list without adding MCP tools or field declarations.
+
+Unavailable values are `null`. The `issues` object is keyed by affected field and may contain
+`provider_timeout`, `provider_busy`, `context_busy` or `provider_unavailable`. An issue affecting one
+provider does not discard values from other providers.
+
+On Linux, the client connects directly to the Unix socket
+`$XDG_RUNTIME_DIR/app/io.github.foldynl.QLog/qlog-runtime`. This fixed path is shared by native,
+AppImage and Flatpak QLog; no discovery or endpoint configuration is needed. QLog creates the
+app directory with mode `0700` and the socket with mode `0600`, owned by the current user.
+The client checks ownership and permissions and never creates directories. If the MCP host
+does not pass `XDG_RUNTIME_DIR`, the client uses `/run/user/<current UID>` as the fixed runtime
+directory; it does not search other locations or fall back to `/tmp`. An explicitly empty or
+relative `XDG_RUNTIME_DIR` remains invalid. Flatpak may use a symlink for the intermediate `app`
+directory; the final app directory must be a real directory.
+
+On macOS, the endpoint is
+`~/Library/Application Support/io.github.foldynl.QLog/qlog-runtime`, matching Qt's
+`QStandardPaths::RuntimeLocation`. The private app directory and socket have the same ownership
+and permission checks as on Linux. This path is independent of different `TMPDIR` values in
+GUI and terminal sessions. The app directory remains after QLog exits; the socket is removed
+on normal shutdown. Other Unix systems retain `qlog-runtime` in the system temporary directory.
+
+On Windows, Qt serves the named pipe `\\.\pipe\qlog-runtime`. QLog uses
+`QLocalServer::UserAccessOption` to restrict access to the current user. The Python client uses
+`asyncio`'s Windows Proactor event loop for named pipes; no Unix socket, filesystem permission
+check or extra package is used on Windows. A host using an incompatible event loop receives a
+connection error; database tools remain independent. The pipe disappears when its handles close.
+
+Each call opens a connection, verifies `system.get_info` protocol 1, requests the
+source list, selected schema or selected context and closes the connection. The total request timeout is two seconds; the
+response limit is 1 MiB. No database is opened by any runtime tool.
+
+If QLog is closed, a runtime call reports `QLog is not running. Start QLog to read the current
+state.` A timeout reports that QLog did not respond in time; other connection failures report
+that the client could not connect to QLog. Explain these errors in the user's language without
+transport terminology. After a failed live read, the current state is unknown; provide an older
+reading only when the user asks for the last known state. Invalid replies and unsupported protocol
+versions report protocol errors. QSO and catalog operations remain independent.
+If a selected source has disappeared, the call reports that QLog rejected the source selection
+and directs the caller to refresh `qlog.list_live_sources`. It does not silently broaden the
+request to all sources. A source's presence in the list does not imply connection or readiness.
+Live values do not choose or change the station scope for historical QSO operations.
+The `runtime` flags in `qlog.get_capabilities` describe tool support, not QLog availability.
 
 ## QSO set comparison
 

@@ -30,6 +30,19 @@ Award and contest rules still belong to the AI assistant and the relevant award 
 QLog MCP reports what is recorded in the log; it does not declare an official award,
 score, or confirmation credit.
 
+## Live QLog state
+
+With a running QLog that implements runtime IPC, the assistant can also read the current
+radio connection, profile, frequency and mode. First discover available subsystems with
+`qlog.list_live_sources()`, then use `qlog.get_schema(domain="runtime", sources=["rig"])`
+and `qlog.get_live_context(sources=["rig"])` to read only the radio provider. Source descriptions
+and field meanings, types and units are supplied by QLog. New sources need no MCP code changes.
+
+Runtime calls use the fixed local endpoint `qlog-runtime`; no endpoint configuration or
+discovery is needed. The client uses Unix sockets on Linux/macOS and a user-restricted
+named pipe on Windows; see [endpoint paths and requirements](docs/tools.md). A database is not required
+for live state, and logbook queries remain available when QLog is closed.
+
 ## Connect it to Codex
 
 Choose one installation method, then start a new Codex session and use `/mcp` to check

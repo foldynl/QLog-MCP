@@ -13,6 +13,8 @@ EXPECTED_TOOLS = {
     "catalog.query",
     "membership.match_qso",
     "qlog.get_context",
+    "qlog.get_live_context",
+    "qlog.list_live_sources",
     "qlog.get_capabilities",
     "qlog.get_schema",
     "qso.aggregate",
@@ -144,6 +146,7 @@ async def test_public_tool_schemas_are_described() -> None:
     assert set(tools["qlog.get_schema"].parameters["properties"]["domain"]["enum"]) == {
         "qso",
         "catalog",
+        "runtime",
     }
     assert all(
         parameter.get("description")

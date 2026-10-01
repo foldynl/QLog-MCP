@@ -6,6 +6,18 @@ This matters for long-lived logs: a newer server can still serve an older databa
 while fields introduced later should disappear cleanly instead of producing misleading
 empty results.
 
+## Optional runtime IPC
+
+Live state requires a running QLog with the `qlog-runtime` endpoint and IPC protocol 1.
+The client uses Unix sockets on Linux/macOS and a named pipe on Windows
+(requiring the standard `asyncio` Proactor event loop). Fixed endpoint paths and access
+restrictions are described in [tools.md](tools.md). This is independent of database compatibility:
+runtime tools work without a database, and database tools work without a running QLog.
+
+Provider fields are discovered through `qlog.get_schema(domain="runtime")`; new providers
+do not require a QLog MCP update when the protocol and result envelopes remain compatible.
+Unavailable fields are `null`, with collection failures reported in `issues`.
+
 ## What is required
 
 The core QSO path needs the `contacts` table with at least `id`, `start_time`, and

@@ -19,3 +19,11 @@ class InvalidQueryError(QLogMcpError):
 
 class IncompatibleDatabaseError(QLogMcpError):
     """Raised when the selected database does not provide required QLog data."""
+
+
+class RuntimeUnavailableError(QLogMcpError):
+    """Raised when QLog runtime IPC cannot be reached or times out."""
+
+
+class RuntimeProtocolError(QLogMcpError):
+    """Raised when the runtime peer returns an incompatible or invalid response."""
