@@ -6,6 +6,8 @@ present in my confirmed contacts”; it never supplies a table name, column name
 SQL fragment. The server translates that meaning into a validated, parameterized
 SQLite operation and returns facts that an assistant can explain.
 
+Live QLog state is a separate read-only path through the application's local runtime IPC.
+
 ## Request path
 
 ```text
@@ -20,6 +22,8 @@ server.py (FastMCP tools, public contract, lazy construction)
     +--> catalog.py -------------------> database.py
     |       +--> qso.py (scoped semantic key set for catalog.match_qso)
     |       +--> setops.py
+    |
+    +--> runtime.py -------------------> qlog-runtime --> running QLog
     |
     +--> usage_log.py (optional redacted middleware)
 ```
@@ -48,6 +52,7 @@ The normal lifecycle is:
 | `filters.py` | Shared nested filter models and operator vocabulary | Interpret domain-specific award rules |
 | `database.py` | Lazy SQLite connections in read-only mode | Migrate, repair, write, or create a QLog database |
 | `discovery.py` | CLI, environment, and QLog discovery-file precedence | Reimplement QLog's platform path logic |
+| `runtime.py` | Lazy Unix socket calls, protocol validation, provider schema and live values | Open SQLite, cache live state, discover endpoints or declare provider fields |
 | `usage_log.py` | Optional privacy-conscious JSONL request metrics | Persist QSO content or filter values |
 
 There is no generic service or repository layer. The direct `server.py -> qso.py` /
@@ -78,6 +83,32 @@ the small `setops.py` SQL composer for set relations and complete summary counts
 their domain-specific detail rows and pagination. Results such as “left only” or “matched”
 are neutral relations, not award or contest decisions.
 
+## Runtime path and provider extension
+
+`server.py` owns one stateless `RuntimeClient`. `qlog.list_live_sources`,
+`qlog.get_live_context(sources=...)` and `qlog.get_schema(domain="runtime", sources=...)`
+open a fresh connection to the fixed `qlog-runtime`
+endpoint and verify protocol 1 before requesting data. Startup, tool listing and capability
+inspection do not contact QLog. Connection and request execution share a two-second timeout.
+
+QLog generates the source list from its provider registrations: each source has a stable
+name and an English description. Listing sources and requesting schema read metadata only.
+MCP forwards a requested `sources` list through IPC; Context selects providers before
+sending requests to their owning threads. Unselected providers are not collected or awaited.
+Omitted selection preserves the original all-provider behavior. An explicit empty list or
+unknown name is rejected without reading state.
+
+QLog collects the selected provider snapshots in their owning threads. MCP forwards the resulting `values`
+and `issues`; a provider timeout is a partial result, while a transport timeout fails the call.
+There is no MCP-side provider registry or mirrored radio state.
+
+To expose another provider, implement and register it in QLog using its runtime provider API.
+Register its source name and description once in QLog. Its schema supplies field names,
+types, descriptions, source names and units, and its snapshot supplies
+JSON values. No changes to `runtime.py` or `server.py` are needed for additional sources or fields.
+Refresh the source list and load schema for newly needed sources; do not maintain a Python enum.
+Transport or envelope changes require a compatible IPC protocol change.
+
 ## Source layout
 
 ```text
@@ -89,6 +120,7 @@ src/qlog_mcp/
 ├── filters.py
 ├── database.py
 ├── discovery.py
+├── runtime.py
 ├── errors.py
 ├── usage_log.py
 └── __main__.py

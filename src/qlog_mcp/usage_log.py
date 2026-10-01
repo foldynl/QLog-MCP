@@ -203,7 +203,7 @@ class UsageLoggingMiddleware(Middleware):
             }
         if tool == "qlog.get_schema":
             domain = arguments.get("domain", "qso")
-            return {"domain": domain if domain in {"qso", "catalog"} else "<invalid>"}
+            return {"domain": domain if domain in {"qso", "catalog", "runtime"} else "<invalid>"}
         return {"argument_names": sorted(cls._identifier(name) for name in arguments)}
 
     @classmethod
