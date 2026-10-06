@@ -1,5 +1,5 @@
-name: CI and AppImage
-run-name: CI and AppImage ${{ github.ref_name }}
+name: CI and packages
+run-name: CI and packages ${{ github.ref_name }}
 
 on:
   pull_request:
@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: appimage-${{ github.ref }}
+  group: packages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -73,10 +73,37 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  windows:
+    if: github.event_name != 'pull_request'
+    name: Windows EXE ${{ needs.checks.outputs.version }} (x86_64)
+    needs: checks
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.10"
+          python-version: "3.12"
+          enable-cache: true
+      - name: Build and smoke-test Windows EXE
+        shell: pwsh
+        run: packaging/windows/build-exe.ps1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: qlog-mcp-${{ needs.checks.outputs.version }}-windows-x86_64
+          path: |
+            dist/*.exe
+            dist/*.exe.sha256
+          if-no-files-found: error
+          retention-days: 30
+
   release:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     name: Release ${{ needs.checks.outputs.version }}
-    needs: [checks, appimage]
+    needs: [checks, appimage, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -115,6 +142,7 @@ jobs:
         run: |
           gh release create "${TAG}" \
             dist/*.AppImage \
+            dist/*.exe \
             dist/*.sha256 \
             --verify-tag \
             --title "QLog MCP ${TAG#v}" \
