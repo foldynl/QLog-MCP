@@ -19,8 +19,8 @@ and aggregations. Keep changes narrow and preserve this read-only, semantic boun
 - `tests/`: pytest coverage using temporary representative QLog databases and an
   in-process FastMCP client.
 - `docs/`: architecture, public-tool, discovery, and compatibility contracts.
-- `packaging/appimage/` and `.github/workflows/appimage.yml`: AppImage packaging
-  through `uv` and native x86_64/aarch64 CI builds.
+- `packaging/appimage/`, `packaging/windows/`, and `.github/workflows/ci.yml`: AppImage
+  and Windows EXE packaging through `uv` and native CI builds.
 
 ## Codebase discovery
 

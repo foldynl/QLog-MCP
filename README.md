@@ -63,6 +63,20 @@ Keep the registered path unchanged. To update the server later, install the new 
 to the same `$HOME/.local/bin/qlog-mcp.AppImage` path and start a new Codex session. This
 avoids changing the MCP configuration for every release.
 
+### Windows executable
+
+Download the Windows x64 `.exe` from
+[GitHub Releases](https://github.com/foldynl/QLog-MCP/releases). It includes Python and
+its dependencies. Save it under a stable name such as `C:\Tools\qlog-mcp.exe` and
+register that path:
+
+```powershell
+codex mcp add qlog -- 'C:\Tools\qlog-mcp.exe' `
+  --database 'C:\absolute\path\to\qlog.db'
+```
+
+To update, replace the executable at the same path and start a new Codex session.
+
 ### From Source Code
 
 Clone this repository, install its dependencies, and register the server:
@@ -93,4 +107,4 @@ placeholders. It never records QSO content, callsigns from scopes, or filter val
 | Award, contest, and activity-analysis examples | [Analysis examples](docs/analysis-examples.md) |
 | Database discovery and compatibility | [Discovery](docs/qlog-discovery.md) and [compatibility](docs/compatibility.md) |
 | Design, privacy, and read-only guarantees | [Architecture](docs/architecture.md) |
-| AppImage builds, versions, and GitHub releases | [Release guide](docs/releasing.md) |
+| AppImage and Windows builds, versions, and GitHub releases | [Release guide](docs/releasing.md) |
