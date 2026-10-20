@@ -32,7 +32,7 @@ score, or confirmation credit.
 
 ## Live QLog state
 
-With a running QLog that implements runtime IPC, the assistant can also read the current
+With a running QLog that implements runtime IPC (version 0.54 or later), the assistant can also read the current
 radio connection, profile, frequency and mode. First discover available subsystems with
 `qlog.list_live_sources()`, then use `qlog.get_schema(domain="runtime", sources=["rig"])`
 and `qlog.get_live_context(sources=["rig"])` to read only the radio provider. Source descriptions
