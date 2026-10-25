@@ -318,7 +318,9 @@ in the catalog's `compatible_qso_fields`:
 | `dxcc` | `dxcc`, `my_dxcc` |
 | `satellite` | `satellite_name` |
 
-`membership` and `membership_clubs` deliberately have no `catalog.match_qso` mapping.
+The `catalog.match_qso` input enum accepts only the six catalogs above. `membership`
+and `membership_clubs` remain available to `catalog.query` and are rejected as matching
+catalogs before database access.
 They contain only membership lists the user downloaded into QLog, not every club in the world.
 Before analyzing a named club, search `membership_clubs`; if the club is absent, the server has
 no data for it and absence must not be treated as non-membership. Membership needs a QSO date
@@ -551,7 +553,14 @@ Filter values must match the semantic field type returned by `qlog.get_schema`:
 Filter type errors identify the field, operator, and expected value type without echoing
 the supplied value. Correct the request using the field metadata from `qlog.get_schema`.
 
-`one_per_group` can keep the `first` or `last` matching QSO for every combination of its fields. Scope and filters are applied first; selection uses QSO datetime and contact ID as a deterministic tie-breaker. The ordinary `sort`, `limit`, and `offset` are then applied to the selected complete QSO rows. A list-valued field groups by its complete stored string here; per-item explosion belongs to `qso.aggregate`.
+Missing or unparseable date/time values project as `null`. Individual-QSO sorting puts
+nulls first in ascending order and last in descending order. To find the first or last
+**known** QSO start, add `{"field": "datetime", "op": "is_not_null"}` before sorting.
+For the first or last known end, filter and sort `datetime_off` instead. If no known
+timestamp remains, report that the time is unknown; an empty known-time result does
+not establish that the selected scope contains no QSOs.
+
+`one_per_group` can keep the `first` or `last` matching QSO for every combination of its fields. Scope and filters are applied first; selection uses QSO datetime and contact ID as a deterministic tie-breaker. For first/last known starts within each group, apply a top-level `datetime` `is_not_null` filter before this selection. The ordinary `sort`, `limit`, and `offset` are then applied to the selected complete QSO rows. A list-valued field groups by its complete stored string here; per-item explosion belongs to `qso.aggregate`.
 
 Use the semantic `band` field for a whole amateur band such as `20m`, including an approximate frequency reference such as “14 MHz”. A missing band is derived from the stored frequency and QLog's `bands` table, so band operations include band-only, frequency-only, and combined records. `qlog.get_schema` publishes the available band names and MHz ranges.
 
@@ -716,7 +725,14 @@ Paper QSL, LoTW, eQSL and DCL received/sent status fields expose the ADIF 3.1.8
 `enum.name` and `enum.values`. Their meanings are directional: received `R` records a
 request by the logging station; sent `R` records a request by the contacted station.
 Received `Y` means confirmation, while sent `Y` means sending/upload acceptance. Received
-`V` is a legacy import-only verified status; assess award credit separately.
+`V` is an import-only historical verified confirmation recording DXCC credit for a QSL
+card or LoTW confirmation. For generic counts of stored confirmations, use
+`{"op": "in", "value": ["Y", "V"]}` in the selected received-status condition; use
+`{"op": "eq", "value": "Y"}` only when the user explicitly requests that exact raw
+status. This convention applies equally to counts and percentage numerators. It does not
+establish current award eligibility or credit. `I`, null, empty and unrecognized codes
+are not positive confirmations and must
+not be silently treated as `N`.
 
 `qsl_received_via` and `qsl_sent_via` expose the ADIF 3.1.8
 [QSL Via](https://www.adif.org/318/ADIF_318.htm#QSLVia_Enumeration) enumeration:

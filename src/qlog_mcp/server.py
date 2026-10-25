@@ -12,6 +12,7 @@ from pydantic import Field
 
 from .catalog import (
     MAX_MATCH_PARTITION_FIELDS,
+    CatalogMatchName,
     CatalogMatchSort,
     CatalogName,
     CatalogQuery,
@@ -104,6 +105,12 @@ def create_server(
             "For questions phrased 'for each X, return the top N Y', use qso.aggregate "
             "top_per_group; do not use one_per_group, which deduplicates individual QSOs before "
             "metrics are calculated. "
+            "For generic stored-confirmation totals, use in ['Y', 'V'] on the selected "
+            "received-status field; V is a legacy verified confirmation, not proof of "
+            "current award credit. Use only Y when the user explicitly requests that raw "
+            "status. For first/last known QSO start or end time, filter datetime or "
+            "datetime_off with is_not_null before sorting; unknown times are not evidence "
+            "that the scope has no QSOs. "
             "Call qlog.get_schema once for each QSO/catalog domain and each needed runtime "
             "source, and reuse that capability snapshot throughout the conversation. "
             "For QSO schema, prefer format='compact': all available fields and their full "
@@ -440,16 +447,19 @@ def create_server(
             "Compare a filtered reference catalog with distinct values from a scoped, "
             "filtered QSO population without returning individual QSOs. Call qlog.get_schema "
             "for both catalog and QSO domains first. Relations describe only set membership; "
-            "this tool does not apply award, activity, or contest rules."
+            "this tool does not apply award, activity, or contest rules. Use "
+            "membership.match_qso for downloaded club roster comparisons."
         ),
         annotations=READ_ONLY_TOOL,
     )
     async def catalog_match_qso(
         catalog: Annotated[
-            CatalogName,
+            CatalogMatchName,
             Field(
                 description=(
-                    "Semantic catalog name advertised by qlog.get_schema(domain='catalog')."
+                    "Matchable catalog advertised by qlog.get_schema(domain='catalog') "
+                    "with compatible_qso_fields. For club rosters, verify membership_clubs "
+                    "with catalog.query, then use membership.match_qso."
                 )
             ),
         ],
@@ -742,7 +752,10 @@ def create_server(
             description=(
                 "Object with items (projected QSO objects), fields (their semantic field "
                 "order), effective_scope, and page. Page contains limit, offset, returned, "
-                "has_more, and next_offset; use next_offset only when has_more is true."
+                "has_more, and next_offset; use next_offset only when has_more is true. "
+                "Missing or unparseable date/time values project as null. For first/last "
+                "known time, filter its field with is_not_null before sorting. An empty "
+                "known-time result does not imply that the scope contains no QSOs."
             )
         ),
     ]:

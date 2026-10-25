@@ -30,16 +30,15 @@ from .qso import LogScope, QsoQuery
 from .setops import SetRelation, compile_set_comparison
 from .usage_log import record_sql
 
-CatalogName = Literal[
+CatalogMatchName = Literal[
     "pota",
     "sota",
     "wwff",
     "iota",
     "dxcc",
     "satellite",
-    "membership",
-    "membership_clubs",
 ]
+CatalogName = Literal[CatalogMatchName, "membership", "membership_clubs"]
 CatalogValueType = Literal["string", "integer", "number", "boolean", "date"]
 CATALOG_NAMES: tuple[CatalogName, ...] = (
     "pota",
@@ -728,8 +727,9 @@ class CatalogQuery:
             if not resolved.definition.qso_fields:
                 suggestion = (
                     "first confirm the club exists in membership_clubs, then use "
+                    "membership.match_qso for worked/not-worked roster callsigns; use "
                     "member_clubs_at_qso_date or member_clubs_in_directory with qso.query "
-                    "or qso.aggregate"
+                    "or qso.aggregate for QSO membership filters"
                     if catalog == "membership"
                     else "use catalog.query"
                 )

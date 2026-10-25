@@ -319,8 +319,8 @@ async def test_membership_catalogs_expose_records_and_club_metadata(catalog_qlog
         },
     ]
     assert unsupported_match.is_error is True
-    assert "does not support catalog.match_qso" in unsupported_match.content[0].text
-    assert "first confirm the club exists in membership_clubs" in unsupported_match.content[0].text
+    assert "Input should be" in unsupported_match.content[0].text
+    assert "catalog" in unsupported_match.content[0].text
 
 
 async def test_membership_match_qso_uses_recorded_membership_periods(catalog_qlog_database) -> None:

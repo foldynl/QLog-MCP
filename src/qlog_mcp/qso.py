@@ -50,7 +50,11 @@ QSL_RECEIVED_STATUS_VALUES = {
     "N": "No incoming QSL or online confirmation received",
     "R": "Logging station requested the other station's QSL or online upload",
     "I": "Ignore or invalid",
-    "V": "Verified (legacy import-only status; assess award credit separately)",
+    "V": (
+        "Legacy verified confirmation (ADIF import-only: DXCC credit recorded for a QSL "
+        "card or LoTW confirmation); include with Y in stored-confirmation totals. "
+        "This does not establish current award credit"
+    ),
 }
 
 QSL_SENT_STATUS_VALUES = {
@@ -293,7 +297,11 @@ class SortSpec(BaseModel):
     )
     direction: SortDirection = Field(
         default=SortDirection.ASC,
-        description="Sort direction for this field.",
+        description=(
+            "Sort direction for this field. NULL values sort first in ascending order and "
+            "last in descending order. For first/last known date/time, filter that field "
+            "with is_not_null before sorting."
+        ),
     )
 
 
@@ -340,7 +348,9 @@ class OnePerGroup(BaseModel):
     )
     keep: Literal["first", "last"] = Field(
         description=(
-            "Keep the earliest or latest QSO by datetime; the contact ID breaks ties."
+            "Keep the earliest or latest QSO by datetime; the contact ID breaks ties. "
+            "For first/last known start time, apply a top-level datetime is_not_null "
+            "filter before this selection."
         ),
     )
 
@@ -1017,8 +1027,8 @@ def _upload_status_field(
 
 QSO_FIELDS: dict[str, QsoField] = {
     "id": _field("id", "integer", "Internal QLog contact identifier"),
-    "datetime": _field("start_time", "datetime", "UTC QSO start time corresponding to ADIF QSO_DATE + TIME_ON"),
-    "datetime_off": _field("end_time", "datetime", "UTC QSO end time corresponding to ADIF QSO_DATE_OFF + TIME_OFF"),
+    "datetime": _field("start_time", "datetime", "UTC QSO start time corresponding to ADIF QSO_DATE + TIME_ON. Missing or unparseable times project as null. For first/last known start time, filter datetime with is_not_null before sorting or one_per_group"),
+    "datetime_off": _field("end_time", "datetime", "UTC QSO end time corresponding to ADIF QSO_DATE_OFF + TIME_OFF. Missing or unparseable times project as null. For first/last known end time, filter datetime_off with is_not_null, then sort by datetime_off"),
     "duration_seconds": _field(
         "end_time",
         "integer",
