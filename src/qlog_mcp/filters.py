@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 Scalar = str | int | float | bool
 
@@ -129,6 +129,8 @@ class SortDirection(str, Enum):
 class FilterCondition(BaseModel):
     """One semantic field comparison inside a filter group."""
 
+    model_config = ConfigDict(extra="forbid")
+
     field: str = Field(
         description=(
             "Semantic field from the selected qlog.get_schema domain; that field also lists "
@@ -152,6 +154,8 @@ class FilterCondition(BaseModel):
 
 class FilterGroup(BaseModel):
     """Recursive boolean combination of filter conditions and nested groups."""
+
+    model_config = ConfigDict(extra="forbid")
 
     logic: FilterLogic = Field(
         default=FilterLogic.AND,

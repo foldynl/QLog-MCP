@@ -146,6 +146,8 @@ class StationScope(str, Enum):
 class StationCallsignSelector(BaseModel):
     """Select one local station callsign, optionally restricted to a Maidenhead locator."""
 
+    model_config = ConfigDict(extra="forbid")
+
     callsign: str = Field(
         min_length=1,
         description="Local station callsign, for example OK1MLG.",
@@ -164,6 +166,8 @@ class StationCallsignSelector(BaseModel):
 
 class LogScope(BaseModel):
     """Station and optional date/operator restrictions for a QSO operation."""
+
+    model_config = ConfigDict(extra="forbid")
 
     station_scope: StationScope = Field(
         description=(
@@ -221,6 +225,8 @@ class LogScope(BaseModel):
 class QsoSetSpec(BaseModel):
     """One scoped and filtered QSO population reduced to semantic keys."""
 
+    model_config = ConfigDict(extra="forbid")
+
     scope: LogScope = Field(
         description="Required station selection and optional date/operator limits for this set."
     )
@@ -241,6 +247,8 @@ class QsoSetSpec(BaseModel):
 
 class SortSpec(BaseModel):
     """One semantic field used to order individual QSOs."""
+
+    model_config = ConfigDict(extra="forbid")
 
     field: str = Field(
         description="Sortable semantic field returned by qlog.get_schema."
@@ -265,6 +273,8 @@ SetComparisonSortField = Literal[
 class SetComparisonSort(BaseModel):
     """One result field used to order a QSO set comparison."""
 
+    model_config = ConfigDict(extra="forbid")
+
     field: SetComparisonSortField = Field(
         description=(
             "Returned key, per-side QSO count, or per-side first/last UTC QSO-start "
@@ -279,6 +289,8 @@ class SetComparisonSort(BaseModel):
 
 class OnePerGroup(BaseModel):
     """Keep one complete QSO for each distinct group of field values."""
+
+    model_config = ConfigDict(extra="forbid")
 
     fields: list[str] = Field(
         min_length=1,
@@ -363,7 +375,7 @@ class AggregateMetric(BaseModel):
 class AggregateCalculation(BaseModel):
     """One arithmetic result derived from numeric aggregate aliases."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     op: CalculationOperator = Field(
         description=(
@@ -396,6 +408,8 @@ class AggregateCalculation(BaseModel):
 class AggregateSort(BaseModel):
     """One returned aggregate dimension, metric, or calculation used to order groups."""
 
+    model_config = ConfigDict(extra="forbid")
+
     field: str = Field(
         description=(
             "A group_by dimension, metric alias, or calculation alias returned by this "
@@ -410,6 +424,8 @@ class AggregateSort(BaseModel):
 
 class AggregateRankSort(BaseModel):
     """One explicit criterion used to rank aggregate rows inside each partition."""
+
+    model_config = ConfigDict(extra="forbid")
 
     field: str = Field(
         description=(
@@ -429,6 +445,7 @@ class AggregateTopPerGroup(BaseModel):
     """Keep a deterministic Top-N of completed aggregate rows in each partition."""
 
     model_config = ConfigDict(
+        extra="forbid",
         json_schema_extra={
             "examples": [
                 {
@@ -478,6 +495,8 @@ class AggregateTopPerGroup(BaseModel):
 class AggregateHaving(BaseModel):
     """Post-aggregation comparison that removes completed result groups."""
 
+    model_config = ConfigDict(extra="forbid")
+
     field: str = Field(
         description="Metric or calculation alias produced by this aggregation."
     )
@@ -496,7 +515,7 @@ class AggregateHaving(BaseModel):
 class GroupBySpec(BaseModel):
     """Transform one semantic field into an aliased aggregate group dimension."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     field: str = Field(
         description=(

@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Any, Literal
 
 import aiosqlite
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .database import Database
 from .errors import IncompatibleDatabaseError, InvalidQueryError
@@ -58,6 +58,8 @@ MAX_MATCH_PARTITIONS = 100
 class CatalogSort(BaseModel):
     """One semantic catalog field used to order directory entries."""
 
+    model_config = ConfigDict(extra="forbid")
+
     field: str = Field(
         description="Sortable semantic field advertised for the selected catalog."
     )
@@ -94,6 +96,8 @@ MATCH_QSO_STAT_FIELDS = {"qso_count", "first_qso", "last_qso"}
 class CatalogMatchSort(BaseModel):
     """One result field used to order a catalog/QSO set comparison."""
 
+    model_config = ConfigDict(extra="forbid")
+
     field: str = Field(
         description=(
             "Catalog field or QSO statistic for matched or not_matched results. Supported "
@@ -123,6 +127,8 @@ class MembershipMatchBasis(str, Enum):
 
 class MembershipMatchSort(BaseModel):
     """One returned membership/QSO result field used to order detail rows."""
+
+    model_config = ConfigDict(extra="forbid")
 
     field: Literal["callsign", "qso_count", "first_qso", "last_qso"] = Field(
         description="Returned membership-match field used for ordering."

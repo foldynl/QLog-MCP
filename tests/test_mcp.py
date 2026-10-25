@@ -1,6 +1,8 @@
 """Tests for the public MCP surface."""
 
 import sqlite3
+from pathlib import Path
+from typing import Any
 
 import pytest
 from fastmcp import Client
@@ -80,6 +82,10 @@ async def test_public_tool_schemas_are_described() -> None:
     assert all(tool.description for tool in tools.values())
     assert all(tool.output_schema.get("description") for tool in tools.values())
     for tool in tools.values():
+        assert tool.parameters["additionalProperties"] is False
+        for definition in tool.parameters.get("$defs", {}).values():
+            if definition.get("type") == "object":
+                assert definition["additionalProperties"] is False
         assert all(
             definition.get("description")
             and all(
@@ -230,6 +236,147 @@ async def test_public_tool_schemas_are_described() -> None:
     assert "complete stored strings" in metric["explode"]["description"]
     assert metric["fields"]["anyOf"][0]["minItems"] == 1
     assert metric["fields"]["anyOf"][0]["maxItems"] == 10
+
+
+@pytest.mark.parametrize(
+    "tool_name,arguments",
+    [
+        pytest.param(
+            "qso.query",
+            {"scope": {"station_scope": "all", "from_date": "2026-02-01"}},
+            id="LogScope",
+        ),
+        pytest.param(
+            "qso.query",
+            {"scope": {"station_scope": "callsign", "station_callsigns": [
+                {"callsign": "OK1MLG", "unexpected_field": True}
+            ]}},
+            id="StationCallsignSelector",
+        ),
+        pytest.param(
+            "qso.query",
+            {"scope": {"station_scope": "all"}, "filters": {"conditons": []}},
+            id="FilterGroup",
+        ),
+        pytest.param(
+            "qso.query",
+            {"scope": {"station_scope": "all"}, "filters": {"conditions": [
+                {"field": "mode", "value": "CW", "unexpected_field": True}
+            ]}},
+            id="FilterCondition",
+        ),
+        pytest.param(
+            "qso.query",
+            {"scope": {"station_scope": "all"}, "filters": {"groups": [
+                {"unexpected_field": True}
+            ]}},
+            id="nested-filter-group",
+        ),
+        pytest.param(
+            "qso.query",
+            {"scope": {"station_scope": "all"}, "filters": {"groups": [
+                {"conditions": [{"field": "mode", "value": "CW", "unexpected_field": True}]}
+            ]}},
+            id="nested-filter-condition",
+        ),
+        pytest.param(
+            "qso.query",
+            {"scope": {"station_scope": "all"}, "sort": [
+                {"field": "datetime", "unexpected_field": True}
+            ]},
+            id="SortSpec",
+        ),
+        pytest.param(
+            "qso.query",
+            {"scope": {"station_scope": "all"}, "one_per_group": {
+                "fields": ["callsign"], "keep": "first", "unexpected_field": True
+            }},
+            id="OnePerGroup",
+        ),
+        pytest.param(
+            "qso.compare_sets",
+            {"left": {"scope": {"station_scope": "all"}, "key": "callsign",
+                      "unexpected_field": True},
+             "right": {"scope": {"station_scope": "all"}, "key": "callsign"},
+             "relation": "both"},
+            id="QsoSetSpec",
+        ),
+        pytest.param(
+            "qso.compare_sets",
+            {"left": {"scope": {"station_scope": "all"}, "key": "callsign"},
+             "right": {"scope": {"station_scope": "all"}, "key": "callsign"},
+             "relation": "both", "sort": [{"field": "key", "unexpected_field": True}]},
+            id="SetComparisonSort",
+        ),
+        *[
+            pytest.param(
+                "qso.aggregate",
+                {"scope": {"station_scope": "all"}, "group_by": [],
+                 "metrics": [{"function": "count", "as": "qsos"}], **extra},
+                id=name,
+            )
+            for name, extra in [
+                ("AggregateMetric", {"metrics": [
+                    {"function": "count", "as": "qsos", "unexpected_field": True}
+                ]}),
+                ("metric-filter", {"metrics": [
+                    {"function": "count", "as": "qsos", "filters": {"unexpected_field": True}}
+                ]}),
+                ("AggregateCalculation", {"calculations": [
+                    {"op": "divide", "left": "qsos", "right": 2, "as": "half",
+                     "unexpected_field": True}
+                ]}),
+                ("AggregateSort", {"order_by": [
+                    {"field": "qsos", "unexpected_field": True}
+                ]}),
+                ("AggregateRankSort", {"top_per_group": {
+                    "partition_by": ["band"], "rank_by": [
+                        {"field": "qsos", "direction": "desc", "unexpected_field": True}
+                    ], "limit": 1,
+                }}),
+                ("AggregateTopPerGroup", {"top_per_group": {
+                    "partition_by": ["band"], "rank_by": [
+                        {"field": "qsos", "direction": "desc"}
+                    ], "limit": 1, "unexpected_field": True,
+                }}),
+                ("AggregateHaving", {"having": [
+                    {"field": "qsos", "value": 1, "unexpected_field": True}
+                ]}),
+                ("GroupBySpec", {"group_by": [
+                    {"field": "datetime", "interval": "day", "as": "day",
+                     "unexpected_field": True}
+                ]}),
+            ]
+        ],
+        pytest.param(
+            "catalog.query",
+            {"catalog": "pota", "sort": [{"field": "reference", "unexpected_field": True}]},
+            id="CatalogSort",
+        ),
+        pytest.param(
+            "catalog.match_qso",
+            {"catalog": "pota", "qso_field": "pota_ref", "scope": {"station_scope": "all"},
+             "sort": [{"field": "qso_count", "unexpected_field": True}]},
+            id="CatalogMatchSort",
+        ),
+        pytest.param(
+            "membership.match_qso",
+            {"club": "TEST", "scope": {"station_scope": "all"},
+             "sort": [{"field": "callsign", "unexpected_field": True}]},
+            id="MembershipMatchSort",
+        ),
+    ],
+)
+async def test_request_models_reject_unknown_fields_before_opening_database(
+    tmp_path: Path, tool_name: str, arguments: dict[str, Any]
+) -> None:
+    database = tmp_path / "missing.sqlite"
+    async with Client(create_server(database)) as client:
+        result = await client.call_tool(tool_name, arguments, raise_on_error=False)
+
+    assert result.is_error is True
+    assert "Extra inputs are not permitted" in result.content[0].text
+    assert not database.exists()
 
 
 async def test_capabilities_tool_through_mcp_client() -> None:

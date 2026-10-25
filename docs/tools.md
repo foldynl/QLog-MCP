@@ -35,6 +35,11 @@ The eleven public tools are:
 
 ## The contract in one minute
 
+Tool arguments and all nested request objects reject unknown properties. Misspelled
+scope limits, filters, sort options, and aggregate definitions produce a validation error
+instead of being silently ignored. Dynamic runtime metadata and provider values remain
+extensible.
+
 Every QSO operation requires an explicit station scope. A safe client first calls
 `qlog.get_context`, asks the user to choose a callsign/profile or all QSOs, then reuses
 that choice. It calls `qlog.get_schema` once per needed domain, constructs requests only
