@@ -36,6 +36,8 @@ from .qso import (
     LogScope,
     OnePerGroup,
     QsoQuery,
+    QsoSchemaFormat,
+    QsoSchemaOperation,
     QsoSetSpec,
     SetComparisonSort,
     SortSpec,
@@ -104,6 +106,13 @@ def create_server(
             "metrics are calculated. "
             "Call qlog.get_schema once for each QSO/catalog domain and each needed runtime "
             "source, and reuse that capability snapshot throughout the conversation. "
+            "For QSO schema, prefer format='compact': all available fields and their full "
+            "descriptions remain present, with shared field_types, enums and list_formats. "
+            "Resolve type_ref, enum_ref and list_format_ref before choosing operators or "
+            "interpreting values; field attributes override shared type defaults. Pass "
+            "operations for only the query, aggregate or compare_sets documentation needed. "
+            "Fetch additional operation documentation when first needed; omitted sections "
+            "do not mean those tools are unsupported. Query arguments remain unchanged. "
             "Do not call it before every operation; refresh it only after the MCP server or "
             "database changes, when QLog restarts or its providers change for the runtime "
             "domain, or after a compatibility error suggests that capabilities "
@@ -274,7 +283,10 @@ def create_server(
             "repeat after the server or database changes, after a compatibility error, or "
             "when QLog restarts or its runtime providers change. For runtime, request only "
             "needed sources advertised by qlog.list_live_sources; reuse schema for known "
-            "sources and fetch definitions for a newly needed source."
+            "sources and fetch definitions for a newly needed source. For QSO, prefer compact "
+            "format to share repeated metadata while retaining all fields and descriptions. "
+            "Use operations to limit operation documentation, and fetch another operation's "
+            "documentation when first needed."
         ),
         annotations=READ_ONLY_TOOL,
     )
@@ -290,6 +302,31 @@ def create_server(
             ),
         ] = "qso",
         sources: SourceSelection = None,
+        format: Annotated[
+            QsoSchemaFormat,
+            Field(
+                description=(
+                    "QSO schema representation: 'full' preserves the original inline "
+                    "definitions (default); 'compact' retains every available field and full "
+                    "description with type_ref, enum_ref and list_format_ref pointing to "
+                    "shared definitions. Compact is supported only for domain='qso'. "
+                    "This changes metadata representation, not query arguments or values."
+                )
+            ),
+        ] = "full",
+        operations: Annotated[
+            list[QsoSchemaOperation] | None,
+            Field(
+                min_length=1,
+                description=(
+                    "QSO-only operation documentation to include: 'query', 'aggregate', "
+                    "'compare_sets'. Omit or use null for all. A non-empty selection retains "
+                    "all fields and common filtering metadata, but includes aggregation "
+                    "and set_comparison sections only when requested. This does not disable "
+                    "tools; fetch additional operation documentation when first needed."
+                ),
+            ),
+        ] = None,
     ) -> Annotated[
         dict[str, Any],
         Field(
@@ -297,6 +334,11 @@ def create_server(
                 "Object keyed by domain. The qso schema describes QSO fields, filtering, and "
                 "aggregation, with optional unit and enum metadata including status meanings. "
                 "These metadata do not convert values or restrict historical status codes. "
+                "In compact QSO schemas, type_ref points to field_types: merge the shared "
+                "definition with field attributes, which override shared defaults. enum_ref "
+                "points to enums; list_format_ref points to list_formats and supplies "
+                "list_semantics. reference_rules explains these references. All available "
+                "fields and their complete descriptions remain present. "
                 "The catalog schema lists available reference directories, "
                 "their semantic fields, operators, defaults, source capability, and compatible "
                 "QSO fields. The runtime schema contains fields keyed by their names, with "
@@ -308,13 +350,18 @@ def create_server(
             )
         ),
     ]:
+        if domain != "qso":
+            if format != "full":
+                raise InvalidQueryError("format='compact' is supported only for domain='qso'")
+            if operations is not None:
+                raise InvalidQueryError("operations is supported only for domain='qso'")
         if domain == "runtime":
             return {domain: await runtime.schema(sources)}
         if sources is not None:
             raise InvalidQueryError("sources is supported only for domain='runtime'")
         if domain == "catalog":
             return {domain: await catalogs.schema()}
-        return {domain: await qso.schema()}
+        return {domain: await qso.schema(format=format, operations=operations)}
 
     @server.tool(
         name="catalog.query",

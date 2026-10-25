@@ -63,6 +63,46 @@ once per server connection and reuse the result. Refresh it only after the serve
 changes, or when a compatibility error indicates that the stored capability snapshot may be
 stale.
 
+For QSO metadata, prefer the compact representation:
+
+```json
+{
+  "domain": "qso",
+  "format": "compact",
+  "operations": ["query"]
+}
+```
+
+Both formats include **every available field and its complete description**. The default
+`format="full"` preserves the original inline definitions. `format="compact"` shares
+repeated definitions through these references, explained by `reference_rules` in the response:
+
+| Field attribute | Shared definition | How to resolve it |
+| --- | --- | --- |
+| `type_ref` | `field_types` | Merge the named definition with the field's attributes; field-specific attributes override shared defaults. |
+| `enum_ref` | `enums` | Use the named definition as the field's `enum`, including its name and value meanings. |
+| `list_format_ref` | `list_formats` | Use the named definition as the field's `list_semantics`. |
+
+Shared field types have readable names such as `string`, `number`, `datetime`, and
+`string_list`. A `string_list` field still projects a stored string; its shared definition
+declares `type="string"`, `cardinality="many"`, and semantic list operators. Units, sides,
+paired fields, and other field-specific attributes remain attached to the field. Distinct
+definitions are preserved as field-specific overrides or inline metadata. Resolve references
+before selecting operators, aggregate functions, or interpreting enum values. References are
+schema metadata; query arguments continue to use semantic field names and actual values.
+
+Optional `operations` selects documentation for `query`, `aggregate`, or `compare_sets` in
+either format. All fields, actual `default_fields`, and common filtering metadata remain
+present. The `aggregation` section is included when `aggregate` is selected; `set_comparison`
+is included when `compare_sets` is selected. Omitted or null `operations` includes all
+sections; an empty list or unknown operation is invalid. Selecting documentation does not
+disable tools or indicate that an omitted operation is unsupported. Reuse known definitions
+and request additional operation documentation when first needed.
+
+Compact format and operation selection apply only to `domain="qso"`; other domains reject
+these options. They change metadata representation and volume, not QSO querying, validation,
+values, scope, or database availability requirements.
+
 For the runtime domain, request schema for selected sources and reuse each source's definitions.
 Fetch definitions when another source is first needed. Refresh the source list and schema when
 QLog restarts, its providers change, or a source selection is rejected.

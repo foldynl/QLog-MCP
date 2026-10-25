@@ -36,6 +36,8 @@ from .usage_log import record_sql
 
 FieldCardinality = Literal["one", "many"]
 FieldSide = Literal["contacted", "logging", "operator", "qso"]
+QsoSchemaFormat = Literal["full", "compact"]
+QsoSchemaOperation = Literal["query", "aggregate", "compare_sets"]
 
 QSO_UPLOAD_STATUS_VALUES = {
     "Y": "Uploaded and accepted by the online service",
@@ -1916,7 +1918,12 @@ class QsoQuery:
         where_sql = " AND ".join(f"({part})" for part in where_parts) or "1 = 1"
         return columns, f"contacts AS c{self._autovalue_join(columns)}", where_sql, parameters
 
-    async def schema(self) -> dict[str, Any]:
+    async def schema(
+        self,
+        *,
+        format: QsoSchemaFormat = "full",
+        operations: list[QsoSchemaOperation] | None = None,
+    ) -> dict[str, Any]:
         async with self.database.connect() as connection:
             columns = await self._available_columns(connection)
             self._require_contacts(columns)
@@ -1974,7 +1981,7 @@ class QsoQuery:
         set_key_fields = [
             name for name, field in available_fields.items() if field.value_type != "object"
         ]
-        return {
+        schema = {
             "fields": fields,
             "default_fields": [name for name in DEFAULT_FIELDS if name in fields],
             "filter_logic": ["and", "or"],
@@ -2212,6 +2219,69 @@ class QsoQuery:
                     "lte": "Less than or equal to one threshold matching the result type.",
                 },
             },
+        }
+
+        if operations is not None:
+            if "aggregate" not in operations:
+                del schema["aggregation"]
+            if "compare_sets" not in operations:
+                del schema["set_comparison"]
+        return self._compact_schema(schema) if format == "compact" else schema
+
+    @staticmethod
+    def _compact_schema(schema: dict[str, Any]) -> dict[str, Any]:
+        """Share metadata without discarding field-specific attributes or exceptions."""
+        field_types: dict[str, dict[str, Any]] = {}
+        enums: dict[str, dict[str, Any]] = {}
+        list_formats: dict[str, dict[str, Any]] = {}
+        shared_keys = (
+            "type",
+            "cardinality",
+            "filterable",
+            "sortable",
+            "operators",
+            "aggregate_functions",
+        )
+        for name, definition in schema["fields"].items():
+            type_name = definition["type"]
+            if definition["cardinality"] == "many":
+                type_name += "_list"
+            field_type = field_types.setdefault(
+                type_name, {key: definition[key] for key in shared_keys}
+            )
+            attributes = {
+                "type_ref": type_name,
+                **{
+                    key: value
+                    for key, value in definition.items()
+                    if key not in field_type or value != field_type[key]
+                },
+            }
+            for attribute, reference, definitions, identifier in (
+                ("enum", "enum_ref", enums, definition.get("enum", {}).get("name")),
+                ("list_semantics", "list_format_ref", list_formats, definition.get("item_type")),
+            ):
+                if identifier is not None and attribute in attributes:
+                    value = attributes[attribute]
+                    if definitions.setdefault(identifier, value) == value:
+                        attributes[reference] = identifier
+                        del attributes[attribute]
+            schema["fields"][name] = attributes
+        return {
+            "reference_rules": {
+                "type_ref": (
+                    "Merge field_types[type_ref] with the field's attributes; field attributes "
+                    "override shared defaults."
+                ),
+                "enum_ref": "Use enums[enum_ref] as the field's enum definition.",
+                "list_format_ref": (
+                    "Use list_formats[list_format_ref] as the field's list_semantics."
+                ),
+            },
+            "field_types": field_types,
+            "enums": enums,
+            "list_formats": list_formats,
+            **schema,
         }
 
     async def context(self) -> dict[str, Any]:
