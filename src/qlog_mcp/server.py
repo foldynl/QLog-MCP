@@ -295,7 +295,9 @@ def create_server(
         Field(
             description=(
                 "Object keyed by domain. The qso schema describes QSO fields, filtering, and "
-                "aggregation. The catalog schema lists available reference directories, "
+                "aggregation, with optional unit and enum metadata including status meanings. "
+                "These metadata do not convert values or restrict historical status codes. "
+                "The catalog schema lists available reference directories, "
                 "their semantic fields, operators, defaults, source capability, and compatible "
                 "QSO fields. The runtime schema contains fields keyed by their names, with "
                 "type, English description, nullable, source and optional unit metadata from a "

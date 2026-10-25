@@ -67,6 +67,23 @@ For the runtime domain, request schema for selected sources and reuse each sourc
 Fetch definitions when another source is first needed. Refresh the source list and schema when
 QLog restarts, its providers change, or a source selection is rejected.
 
+QSO field definitions include optional `unit` and `enum` metadata. `unit` describes the
+numeric values returned by queries and expected in filters; reading the schema does not
+convert those values. Fields without a specified unit omit the attribute. Current units are:
+
+| QSO fields | `unit` |
+| --- | --- |
+| `frequency`, `frequency_rx` | `MHz` |
+| `frequency_offset_khz` | `kHz` |
+| `distance` | `km` |
+| `tx_power`, `rx_power` | `W` |
+| `duration_seconds` | `s` |
+| `altitude`, `my_altitude` | `m` |
+
+Historical QSO frequencies remain in MHz; runtime `rig_frequency` uses Hz. Consult the
+metadata for the selected domain before combining values. Metadata is advertised only for
+fields available in the selected database.
+
 ## Live runtime context
 
 First call `qlog.list_live_sources()` to discover available source names and their English
@@ -650,8 +667,37 @@ The semantic `mode` field follows QLog's operator-facing display: it returns `su
 
 The semantic `base_callsign` field is QLog's computed contacted callsign without portable prefixes or suffixes. `wavelog_upload_status` and `wavelog_upload_date` expose the per-QSO Wavelog integration state. These fields are available when the selected database contains `contacts_autovalue`.
 
-All `*_upload_status` fields use the [ADIF QSO Upload Status](https://www.adif.org/317/ADIF_317.htm#QSOUploadStatus_Enumeration) enumeration. `Y` means uploaded and accepted by the service, `N` means the QSO must not be uploaded, and `M` means it was modified after an earlier upload. `qlog.get_schema` exposes these values and meanings with every available upload
+All `*_upload_status` fields use the [ADIF QSO Upload Status](https://www.adif.org/318/ADIF_318.htm#QSOUploadStatus_Enumeration) enumeration. `Y` means uploaded and accepted by the service, `N` means the QSO must not be uploaded, and `M` means it was modified after an earlier upload. `qlog.get_schema` exposes these values and meanings with every available upload
 status field.
+
+Paper QSL, LoTW, eQSL and DCL received/sent status fields expose the ADIF 3.1.8
+[QSL Rcvd](https://www.adif.org/318/ADIF_318.htm#QSLRcvd_Enumeration) and
+[QSL Sent](https://www.adif.org/318/ADIF_318.htm#QSLSent_Enumeration) enumerations through
+`enum.name` and `enum.values`. Their meanings are directional: received `R` records a
+request by the logging station; sent `R` records a request by the contacted station.
+Received `Y` means confirmation, while sent `Y` means sending/upload acceptance. Received
+`V` is a legacy import-only verified status; assess award credit separately.
+
+`qsl_received_via` and `qsl_sent_via` expose the ADIF 3.1.8
+[QSL Via](https://www.adif.org/318/ADIF_318.htm#QSLVia_Enumeration) enumeration:
+`B` bureau, `D` direct, `E` electronic, and legacy import-only `M` manager.
+The received route is actual only when `qsl_received` is `Y` or legacy `V`; otherwise
+it describes the requested or intended request route. The sent route is actual only
+when `qsl_sent` is `Y`; otherwise it describes the intended route. If the respective
+status is unavailable or unknown, actual versus intended is unknown. A route alone
+does not prove receipt or sending. Route fields remain available independently of
+the status fields. Free-text `qsl_via` is a separate field and does not use this enum.
+
+`eqsl_authenticity_guaranteed` exposes ADIF 3.1.8
+[EQSL_AG](https://www.adif.org/318/ADIF_318.htm#EQSL_AG_Enumeration): `Y` records that
+the contacted callsign holds AG status, `N` records that it does not, and `U` means
+unspecified or unknown (the ADIF default). This is stored information, not a live
+verification or confirmation of this QSO. Use `eqsl_received` for QSO confirmation;
+AG status and QSO confirmation are independent.
+
+Enums document standard values. Queries still accept historical or undocumented string
+codes, and return the stored values. Null, empty and unrecognized values are not replaced
+with `N` or `U`.
 
 `scope.station_profile_names` follows QLog's own profile matching concept. QLog stores profile names as the primary key; QSO rows do not contain a profile ID.
 Names use SQLite's `NOCASE` comparison. Every requested profile must exist; an unknown

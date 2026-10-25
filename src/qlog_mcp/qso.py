@@ -43,6 +43,35 @@ QSO_UPLOAD_STATUS_VALUES = {
     "M": "Modified after a previous upload",
 }
 
+QSL_RECEIVED_STATUS_VALUES = {
+    "Y": "Incoming QSL received or online confirmation obtained",
+    "N": "No incoming QSL or online confirmation received",
+    "R": "Logging station requested the other station's QSL or online upload",
+    "I": "Ignore or invalid",
+    "V": "Verified (legacy import-only status; assess award credit separately)",
+}
+
+QSL_SENT_STATUS_VALUES = {
+    "Y": "Outgoing QSL sent or upload accepted by the online service",
+    "N": "Do not send a QSL or upload this QSO",
+    "R": "Contacted station requested our QSL or online upload",
+    "Q": "Queued for an outgoing QSL or online upload",
+    "I": "Ignore or invalid",
+}
+
+QSL_VIA_VALUES = {
+    "B": "Bureau",
+    "D": "Direct",
+    "E": "Electronic",
+    "M": "QSL manager (legacy import-only route)",
+}
+
+EQSL_AG_VALUES = {
+    "Y": "Contacted callsign recorded as holding eQSL Authenticity Guaranteed status",
+    "N": "Contacted callsign recorded as not holding eQSL Authenticity Guaranteed status",
+    "U": "Unspecified; Authenticity Guaranteed status is unknown (ADIF default)",
+}
+
 
 class HavingOperator(str, Enum):
     """Comparison supported between an aggregate metric and a scalar threshold."""
@@ -606,6 +635,7 @@ class QsoField:
     item_type: str | None = None
     side: FieldSide | None = None
     paired_field: str | None = None
+    unit: str | None = None
 
     def available(self, columns: set[str]) -> bool:
         required = self.required_columns or (self.column,)
@@ -834,6 +864,7 @@ def _field(
     enum_values: dict[str, str] | None = None,
     sql_expression: str | None = None,
     required_columns: tuple[str, ...] = (),
+    unit: str | None = None,
 ) -> QsoField:
     return QsoField(
         column=column,
@@ -843,6 +874,7 @@ def _field(
         enum_values=enum_values,
         sql_expression=sql_expression,
         required_columns=required_columns,
+        unit=unit,
     )
 
 
@@ -996,6 +1028,7 @@ QSO_FIELDS: dict[str, QsoField] = {
             "julianday({table_alias}.\"start_time\")) * 86400) AS INTEGER) END"
         ),
         required_columns=("start_time", "end_time"),
+        unit="s",
     ),
     "callsign": _field("callsign", "string", "ADIF CALL: callsign of the station contacted or heard; this is the remote station, not the logging station or operator"),
     "rst_sent": _field("rst_sent", "string", "Signal report sent by the logging station to the contacted station"),
@@ -1008,8 +1041,8 @@ QSO_FIELDS: dict[str, QsoField] = {
         "rst_rcvd",
         "Integer form of ADIF RST_RCVD for numeric filtering and aggregation; NULL when the complete report is not an integer, for example 5NN. Compare only QSOs using compatible report conventions: CW/phone reports such as 599 or 59 and digital signal reports such as -12 use different scales",
     ),
-    "frequency": _field("freq", "number", "ADIF FREQ: exact logging station transmit frequency in MHz; use this for a specific frequency such as 14.145, and use band for a whole band such as 20m or an approximate reference such as 14 MHz; a band-only QSO has no exact frequency"),
-    "frequency_rx": _field("freq_rx", "number", "ADIF FREQ_RX: exact logging station receive frequency in MHz for split or cross-band QSOs; a band-only QSO has no exact receive frequency"),
+    "frequency": _field("freq", "number", "ADIF FREQ: exact logging station transmit frequency in MHz; use this for a specific frequency such as 14.145, and use band for a whole band such as 20m or an approximate reference such as 14 MHz; a band-only QSO has no exact frequency", unit="MHz"),
+    "frequency_rx": _field("freq_rx", "number", "ADIF FREQ_RX: exact logging station receive frequency in MHz for split or cross-band QSOs; a band-only QSO has no exact receive frequency", unit="MHz"),
     "frequency_offset_khz": _field(
         "freq_rx",
         "number",
@@ -1020,6 +1053,7 @@ QSO_FIELDS: dict[str, QsoField] = {
             "AS REAL)) * 1000, 6)"
         ),
         required_columns=("freq", "freq_rx"),
+        unit="kHz",
     ),
     "band": _field("band", "string", "Canonical transmit band such as 20m; when ADIF BAND is empty and the QLog bands table is available, derive it from FREQ so band filters and groups include frequency-only QSOs"),
     "band_rx": _field("band_rx", "string", "Canonical receive band for split or cross-band QSOs; when ADIF BAND_RX is empty and the QLog bands table is available, derive it from FREQ_RX"),
@@ -1065,25 +1099,25 @@ QSO_FIELDS: dict[str, QsoField] = {
     "wwff_ref": _field("wwff_ref", "string", "ADIF WWFF_REF: contacted-station WWFF reference"),
     "sig": _field("sig", "string", "ADIF SIG: contacted-station special-interest group name; interpret sig_info in this group's context"),
     "sig_info": _field("sig_info", "string", "ADIF SIG_INFO: contacted-station reference whose syntax and meaning are defined by sig"),
-    "qsl_received": _field("qsl_rcvd", "string", "ADIF QSL_RCVD status for paper QSL; this is an ADIF QSL Rcvd enumeration, not a boolean"),
+    "qsl_received": _field("qsl_rcvd", "string", "ADIF QSL_RCVD status for paper QSL; this is an ADIF QSL Rcvd enumeration, not a boolean", enum_name="ADIF QSL Rcvd", enum_values=QSL_RECEIVED_STATUS_VALUES),
     "qsl_received_date": _field("qsl_rdate", "date", "ADIF QSLRDATE: UTC date on which paper QSL confirmation was received"),
-    "qsl_sent": _field("qsl_sent", "string", "ADIF QSL_SENT status for paper QSL; this is an ADIF QSL Sent enumeration, not a boolean"),
+    "qsl_sent": _field("qsl_sent", "string", "ADIF QSL_SENT status for paper QSL; this is an ADIF QSL Sent enumeration, not a boolean", enum_name="ADIF QSL Sent", enum_values=QSL_SENT_STATUS_VALUES),
     "qsl_sent_date": _field("qsl_sdate", "date", "ADIF QSLSDATE: UTC date on which paper QSL confirmation was sent"),
-    "lotw_received": _field("lotw_qsl_rcvd", "string", "ADIF LOTW_QSL_RCVD status; uses the ADIF QSL Rcvd enumeration, not a boolean"),
+    "lotw_received": _field("lotw_qsl_rcvd", "string", "ADIF LOTW_QSL_RCVD status; uses the ADIF QSL Rcvd enumeration, not a boolean", enum_name="ADIF QSL Rcvd", enum_values=QSL_RECEIVED_STATUS_VALUES),
     "lotw_received_date": _field("lotw_qslrdate", "date", "LoTW received date"),
-    "lotw_sent": _field("lotw_qsl_sent", "string", "ADIF LOTW_QSL_SENT status; uses the ADIF QSL Sent enumeration, not a boolean"),
+    "lotw_sent": _field("lotw_qsl_sent", "string", "ADIF LOTW_QSL_SENT status; uses the ADIF QSL Sent enumeration, not a boolean", enum_name="ADIF QSL Sent", enum_values=QSL_SENT_STATUS_VALUES),
     "lotw_sent_date": _field("lotw_qslsdate", "date", "LoTW sent date"),
-    "eqsl_received": _field("eqsl_qsl_rcvd", "string", "ADIF EQSL_QSL_RCVD status; uses the ADIF QSL Rcvd enumeration, not a boolean"),
+    "eqsl_received": _field("eqsl_qsl_rcvd", "string", "ADIF EQSL_QSL_RCVD status; uses the ADIF QSL Rcvd enumeration, not a boolean", enum_name="ADIF QSL Rcvd", enum_values=QSL_RECEIVED_STATUS_VALUES),
     "eqsl_received_date": _field("eqsl_qslrdate", "date", "eQSL received date"),
-    "eqsl_sent": _field("eqsl_qsl_sent", "string", "ADIF EQSL_QSL_SENT status; uses the ADIF QSL Sent enumeration, not a boolean"),
+    "eqsl_sent": _field("eqsl_qsl_sent", "string", "ADIF EQSL_QSL_SENT status; uses the ADIF QSL Sent enumeration, not a boolean", enum_name="ADIF QSL Sent", enum_values=QSL_SENT_STATUS_VALUES),
     "eqsl_sent_date": _field("eqsl_qslsdate", "date", "eQSL sent date"),
-    "dcl_received": _field("dcl_qsl_rcvd", "string", "ADIF DCL_QSL_RCVD status; uses the ADIF QSL Rcvd enumeration, not a boolean"),
+    "dcl_received": _field("dcl_qsl_rcvd", "string", "ADIF DCL_QSL_RCVD status; uses the ADIF QSL Rcvd enumeration, not a boolean", enum_name="ADIF QSL Rcvd", enum_values=QSL_RECEIVED_STATUS_VALUES),
     "dcl_received_date": _field("dcl_qslrdate", "date", "DCL received date"),
-    "dcl_sent": _field("dcl_qsl_sent", "string", "ADIF DCL_QSL_SENT status; uses the ADIF QSL Sent enumeration, not a boolean"),
+    "dcl_sent": _field("dcl_qsl_sent", "string", "ADIF DCL_QSL_SENT status; uses the ADIF QSL Sent enumeration, not a boolean", enum_name="ADIF QSL Sent", enum_values=QSL_SENT_STATUS_VALUES),
     "dcl_sent_date": _field("dcl_qslsdate", "date", "DCL sent date"),
-    "tx_power": _field("tx_pwr", "number", "ADIF TX_PWR: logging station transmitter power in Watts"),
-    "rx_power": _field("rx_pwr", "number", "ADIF RX_PWR: contacted station transmitter power in Watts"),
-    "distance": _field("distance", "number", "ADIF DISTANCE: distance between logging and contacted stations, in kilometers"),
+    "tx_power": _field("tx_pwr", "number", "ADIF TX_PWR: logging station transmitter power in Watts", unit="W"),
+    "rx_power": _field("rx_pwr", "number", "ADIF RX_PWR: contacted station transmitter power in Watts", unit="W"),
+    "distance": _field("distance", "number", "ADIF DISTANCE: distance between logging and contacted stations, in kilometers", unit="km"),
     "comment": _field("comment", "string", "QSO comment"),
     "notes": _field("notes", "string", "QSO notes"),
     "operator": _field("operator", "string", "ADIF OPERATOR: callsign of the person operating the logging station; do not confuse with station_callsign or contacted_operator"),
@@ -1186,8 +1220,8 @@ QSO_FIELDS: dict[str, QsoField] = {
     ),
     "qsl_message": _field("qslmsg", "string", "Message for the contacted operator to be included on a QSL"),
     "qsl_message_intl": _field("qslmsg_intl", "string", "Internationalized message for the contacted operator to be included on a QSL"),
-    "qsl_received_via": _field("qsl_rcvd_via", "string", "ADIF QSL_RCVD_VIA enumeration describing how the QSL was received by the logging station"),
-    "qsl_sent_via": _field("qsl_sent_via", "string", "ADIF QSL_SENT_VIA enumeration describing how the QSL was sent by the logging station"),
+    "qsl_received_via": _field("qsl_rcvd_via", "string", "ADIF QSL_RCVD_VIA: actual receipt route when qsl_received is Y or legacy V; otherwise the route requested or intended to be requested by the logging station. If qsl_received is unavailable or unknown, actual versus intended route is unknown. This field alone does not prove receipt", enum_name="ADIF QSL Via", enum_values=QSL_VIA_VALUES),
+    "qsl_sent_via": _field("qsl_sent_via", "string", "ADIF QSL_SENT_VIA: actual sending route when qsl_sent is Y; otherwise the logging station's intended sending route. If qsl_sent is unavailable or unknown, actual versus intended route is unknown. This field alone does not prove sending", enum_name="ADIF QSL Via", enum_values=QSL_VIA_VALUES),
     "qsl_via": _field("qsl_via", "string", "QSL routing information, such as a QSL manager callsign"),
     "qso_complete": _field("qso_complete", "string", "ADIF QSO_COMPLETE enumeration describing whether the QSO was completed or why it was incomplete; not a boolean"),
     "qso_random": _field("qso_random", "string", "ADIF QSO_RANDOM boolean (Y/N): whether the QSO frequency was selected randomly rather than by schedule"),
@@ -1208,7 +1242,7 @@ QSO_FIELDS: dict[str, QsoField] = {
     "vucc_grids": _field("vucc_grids", "string", "ADIF VUCC_GRIDS: comma-delimited list of contacted-station Maidenhead grid squares credited for the QSO"),
     "web": _field("web", "string", "Contacted station's web URL"),
     "my_arrl_section": _field("my_arrl_sect", "string", "Logging station's ARRL section"),
-    "altitude": _field("altitude", "number", "Contacted station's altitude above mean sea level in meters"),
+    "altitude": _field("altitude", "number", "Contacted station's altitude above mean sea level in meters", unit="m"),
     "grid_ext": _field("gridsquare_ext", "string", "ADIF GRIDSQUARE_EXT: characters 9-10 for a 10-character locator or 9-12 for a 12-character locator; append to grid"),
     "hamlogeu_upload_date": _field("hamlogeu_qso_upload_date", "date", "Date the QSO was last uploaded to HAMLOG.online/HAMLOG.eu"),
     "hamlogeu_upload_status": _upload_status_field(
@@ -1218,7 +1252,7 @@ QSO_FIELDS: dict[str, QsoField] = {
     "hamqth_upload_status": _upload_status_field(
         "hamqth_qso_upload_status", "HamQTH"
     ),
-    "my_altitude": _field("my_altitude", "number", "Logging station's altitude above mean sea level in meters"),
+    "my_altitude": _field("my_altitude", "number", "Logging station's altitude above mean sea level in meters", unit="m"),
     "my_grid_ext": _field("my_gridsquare_ext", "string", "ADIF MY_GRIDSQUARE_EXT: characters 9-10 for a 10-character locator or 9-12 for a 12-character locator; append to my_grid"),
     "county_alt": _field("cnty_alt", "string", "ADIF CNTY_ALT: semicolon-delimited contacted-station alternate subdivisions in enumeration-name:code form; '/' separates multiple localities within a code"),
     "morse_key_info": _field("morse_key_info", "string", "Information about the contacted station operator's Morse key"),
@@ -1230,7 +1264,7 @@ QSO_FIELDS: dict[str, QsoField] = {
     "qrzcom_download_date": _field("qrzcom_qso_download_date", "date", "Date the QSO was downloaded from QRZ.com"),
     "qrzcom_download_status": _field("qrzcom_qso_download_status", "string", "ADIF QRZCOM_QSO_DOWNLOAD_STATUS enumeration; represents QRZ.com download state, not a boolean"),
     "qsl_message_received": _field("qslmsg_rcvd", "string", "Message addressed to the logging operator received on a paper or electronic QSL"),
-    "eqsl_authenticity_guaranteed": _field("eqsl_ag", "string", "ADIF EQSL_AG enumeration indicating eQSL Authenticity Guaranteed status; use the stored ADIF code"),
+    "eqsl_authenticity_guaranteed": _field("eqsl_ag", "string", "ADIF EQSL_AG: stored Authenticity Guaranteed status of the contacted callsign, not a live lookup or confirmation of this QSO; use eqsl_received for QSO confirmation. U means unspecified, not N", enum_name="ADIF EQSL_AG", enum_values=EQSL_AG_VALUES),
     # Derived and integration values stored one-to-one with contacts.
     "base_callsign": _autovalue_field(
         "base_callsign",
@@ -1895,6 +1929,7 @@ class QsoQuery:
             name: {
                 "type": field.value_type,
                 "description": field.description,
+                **({"unit": field.unit} if field.unit is not None else {}),
                 "cardinality": field.cardinality,
                 "filterable": field.filterable,
                 "sortable": field.sortable,
