@@ -46,6 +46,11 @@ that choice. It calls `qlog.get_schema` once per needed domain, constructs reque
 from the advertised semantic fields and operators, and refreshes the snapshot after a
 database/server change or compatibility error.
 
+`qlog.get_context` derives its first/last QSO bounds after interpreting timestamps as UTC.
+Missing timestamps and values SQLite cannot interpret do not contribute to the bounds;
+both bounds are `null` if no interpretable timestamps exist. Its QSO count still includes
+every contact row.
+
 Use `qso.aggregate` by default for statistics and `qso.compare_sets` when the question
 compares distinct keys from two QSO populations. Use `qso.query` when the user needs the
 actual contact rows, a last/first record, or evidence for a summary. Catalog results are
@@ -363,8 +368,11 @@ list rules. `valid_*_state` distinguishes blank open boundaries from malformed n
 
 ## Membership roster/QSO matching
 
-`membership.match_qso` requires an exact club from `membership_clubs` and an explicit QSO
+`membership.match_qso` requires a club identifier from `membership_clubs` and an explicit QSO
 scope. It returns one row per member base callsign, with QSO count and first/last matching QSO.
+Club identifiers ignore surrounding spaces and ASCII letter case. Callsigns compare without
+regard to ASCII letter case in both membership fields and this tool. Case variants count as
+one member; duplicate or overlapping member records do not count the same QSO more than once.
 `membership_basis=qso_date` requires the member record to cover the date of each QSO; empty
 dates are open and malformed non-empty dates are excluded. `directory_snapshot` instead compares
 every callsign in QLog's locally stored club roster with any scoped QSO and intentionally ignores
@@ -453,6 +461,11 @@ Malformed safely delimited items are kept as trimmed exact items instead of bein
 `qso.query` is implemented. It supports field projection, nested `and`/`or` groups with optional `negate`, sorting, station/date/operator scope, and offset pagination. All filter values are bound SQLite parameters; clients cannot supply table names, column names, or SQL expressions.
 
 Every QSO operation requires `scope.station_scope`. Its value is `callsign`, `profile`, or `all`. For `callsign`, pass one or more entries in `station_callsigns`; each entry contains a callsign and may contain a grid. For `profile`, pass one or more `station_profile_names`. `qlog.get_context` returns the available callsign/grid pairs and station profiles.
+
+Station callsign, locator and operator-callsign selection ignores surrounding spaces and
+ASCII letter case in both stored and requested identifiers. Profile matching uses the same
+normalization for its callsign, locator and operator callsign. A supplied grid matches the
+complete locator; omitting it includes all locations for the selected callsign.
 
 `qlog.get_schema` publishes the supported `operators` separately for every semantic field, and `filter_operator_semantics` describes each operator. Text fields additionally support `contains`, `starts_with`, and `ends_with`; text matching is case-insensitive. `between` includes both boundaries. `is_null` and `is_not_null` check SQL `NULL` specifically. `is_empty` treats `NULL`, an empty
 string, and a string containing only whitespace as empty; `is_not_empty` is its inverse. `limit` is restricted to 1–1000 and the response reports `has_more` plus `next_offset`.

@@ -152,7 +152,9 @@ def create_server(
             description=(
                 "Object containing database_schema, qso_count, first_qso and last_qso UTC "
                 "timestamps, station_callsigns with optional grids, operators, and "
-                "station_profiles for choosing a QSO scope."
+                "station_profiles for choosing a QSO scope. Time bounds use SQLite's UTC "
+                "interpretation; missing or invalid timestamps that it cannot parse are ignored. "
+                "Both bounds are null if no interpretable times exist. qso_count counts all QSOs."
             )
         ),
     ]:
@@ -534,9 +536,10 @@ def create_server(
         name="membership.match_qso",
         description=(
             "Compare one club list downloaded into QLog, not a global club directory, with a "
-            "scoped QSO population. A QSO matches only when the contacted base callsign is "
+            "scoped QSO population. By default a QSO matches when the contacted base callsign is "
             "covered by the stored membership interval on that QSO date. This is evidence, not "
-            "award-credit determination."
+            "award-credit determination. Callsign matching is case-insensitive; case variants "
+            "count as one member, and each matching QSO is counted once."
         ),
         annotations=READ_ONLY_TOOL,
     )
@@ -547,7 +550,8 @@ def create_server(
                 min_length=1,
                 description=(
                     "Club identifier from membership_clubs. The tool rejects a club whose list "
-                    "is not downloaded into QLog rather than inferring non-membership."
+                    "is not downloaded into QLog rather than inferring non-membership. "
+                    "Comparisons ignore surrounding spaces and ASCII letter case."
                 ),
             ),
         ],

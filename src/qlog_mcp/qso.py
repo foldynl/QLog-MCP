@@ -146,7 +146,10 @@ class StationScope(str, Enum):
 
 
 class StationCallsignSelector(BaseModel):
-    """Select one local station callsign, optionally restricted to a Maidenhead locator."""
+    """Select one local station callsign, optionally restricted to a Maidenhead locator.
+
+    Callsign and locator comparisons ignore surrounding spaces and ASCII letter case.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -189,7 +192,8 @@ class LogScope(BaseModel):
         default_factory=list,
         description=(
             "Optional case-insensitive restriction to ADIF OPERATOR: the person operating "
-            "the logging station. This is combined with the station and date restrictions."
+            "the logging station. Comparisons ignore surrounding spaces in stored and "
+            "requested callsigns. This is combined with the station and date restrictions."
         ),
     )
     station_profile_names: list[str] = Field(
@@ -2183,8 +2187,8 @@ class QsoQuery:
             row = await self._fetch_one(
                 connection,
                 "SELECT COUNT(*) AS qso_count, "
-                "strftime('%Y-%m-%dT%H:%M:%SZ', MIN(start_time)) AS first_qso, "
-                "strftime('%Y-%m-%dT%H:%M:%SZ', MAX(start_time)) AS last_qso "
+                "strftime('%Y-%m-%dT%H:%M:%SZ', MIN(datetime(start_time))) AS first_qso, "
+                "strftime('%Y-%m-%dT%H:%M:%SZ', MAX(datetime(start_time))) AS last_qso "
                 "FROM contacts",
             )
             station_callsigns = (
@@ -3068,9 +3072,9 @@ class QsoQuery:
                     "Operator filtering is unavailable; contacts is missing: operator"
                 )
             parameters.extend(scope.operator_callsigns)
-            placeholders = ", ".join("?" for _ in scope.operator_callsigns)
+            placeholders = ", ".join("TRIM(?)" for _ in scope.operator_callsigns)
             parts.append(
-                f"{operator.comparison_expression()} IN ({placeholders})"
+                f"TRIM({operator.base_expression()}) COLLATE NOCASE IN ({placeholders})"
             )
         if scope.date_from is not None:
             parts.append('datetime(c."start_time") >= datetime(?)')
@@ -3096,17 +3100,19 @@ class QsoQuery:
                 + ", ".join(sorted(missing))
             )
 
-        callsign_expression = QSO_FIELDS["station_callsign"].comparison_expression()
-        grid_expression = QSO_FIELDS["my_grid"].comparison_expression()
+        callsign_expression = (
+            f"TRIM({QSO_FIELDS['station_callsign'].base_expression()}) COLLATE NOCASE"
+        )
+        grid_expression = f"TRIM({QSO_FIELDS['my_grid'].base_expression()}) COLLATE NOCASE"
 
         parts: list[str] = []
         for station in stations:
             if station.grid is None:
-                parts.append(f"{callsign_expression} = ?")
+                parts.append(f"{callsign_expression} = TRIM(?)")
                 parameters.append(station.callsign)
             else:
                 parts.append(
-                    f"({callsign_expression} = ? AND {grid_expression} = ?)"
+                    f"({callsign_expression} = TRIM(?) AND {grid_expression} = TRIM(?))"
                 )
                 parameters.extend((station.callsign, station.grid))
 
@@ -3152,8 +3158,8 @@ class QsoQuery:
         placeholders = ", ".join("?" for _ in profile_names)
         parameters.extend(profile_names)
         matches = [
-            'c."station_callsign" COLLATE NOCASE = sp."callsign"',
-            'c."my_gridsquare" COLLATE NOCASE = sp."locator"',
+            'TRIM(c."station_callsign") COLLATE NOCASE = TRIM(sp."callsign")',
+            'TRIM(c."my_gridsquare") COLLATE NOCASE = TRIM(sp."locator")',
         ]
         for profile_column, contact_column, value_type in PROFILE_MATCH_COLUMNS:
             if profile_column not in profile_columns or contact_column not in contact_columns:
@@ -3164,9 +3170,14 @@ class QsoQuery:
                     f'OR c."{contact_column}" = sp."{profile_column}")'
                 )
             else:
+                comparison = f'c."{contact_column}" COLLATE NOCASE = sp."{profile_column}"'
+                if profile_column == "operator_callsign":
+                    comparison = (
+                        f'TRIM(c."{contact_column}") COLLATE NOCASE = TRIM(sp."{profile_column}")'
+                    )
                 matches.append(
                     f'(NULLIF(TRIM(sp."{profile_column}"), \'\') IS NULL '
-                    f'OR c."{contact_column}" COLLATE NOCASE = sp."{profile_column}")'
+                    f'OR {comparison})'
                 )
 
         return (

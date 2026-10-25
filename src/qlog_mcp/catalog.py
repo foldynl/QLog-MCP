@@ -1209,7 +1209,7 @@ class CatalogQuery:
             club_rows = await self._execute_sql(
                 connection,
                 f'SELECT {club_key} AS "_club" FROM "{club_catalog.source.table}" AS d '
-                f"WHERE {club_key} COLLATE NOCASE = ? LIMIT 1",
+                f"WHERE TRIM({club_key}) COLLATE NOCASE = TRIM(?) LIMIT 1",
                 [club],
             )
             if not club_rows:
@@ -1246,12 +1246,12 @@ class CatalogQuery:
             to_date = compact_date_expression(to_value)
             member_source = (
                 '"_membership_source" AS ('
-                'SELECT m."callsign" AS "_callsign", '
+                'SELECT m."callsign" COLLATE NOCASE AS "_callsign", '
                 f'{from_date} AS "_from_date", {to_date} AS "_to_date", '
                 f"NULLIF({from_value}, '') IS NULL AS \"_from_open\", "
                 f"NULLIF({to_value}, '') IS NULL AS \"_to_open\" "
                 'FROM membership AS m '
-                'WHERE m."clubid" = ? '
+                'WHERE TRIM(m."clubid") COLLATE NOCASE = TRIM(?) '
                 'AND NULLIF(TRIM(CAST(m."callsign" AS TEXT)), \'\') IS NOT NULL)'
             )
             usable_dates = (
@@ -1280,7 +1280,7 @@ class CatalogQuery:
                 '"_qso_rows" AS ('
                 'SELECT c."id" AS "_contact_id", DATE(c."start_time") AS "_qso_date", '
                 "strftime('%Y-%m-%dT%H:%M:%SZ', c.\"start_time\") AS \"_datetime\", "
-                'a."base_callsign" AS "_callsign" '
+                'a."base_callsign" COLLATE NOCASE AS "_callsign" '
                 f'FROM {source} WHERE ({qso_where}) '
                 'AND NULLIF(TRIM(CAST(a."base_callsign" AS TEXT)), \'\') IS NOT NULL '
                 'AND DATE(c."start_time") IS NOT NULL)'
@@ -1309,7 +1309,7 @@ class CatalogQuery:
             invalid_rows = (
                 '"_invalid_rows" AS ('
                 'SELECT COUNT(*) AS "_count" FROM membership AS m '
-                'WHERE m."clubid" = ? '
+                'WHERE TRIM(m."clubid") COLLATE NOCASE = TRIM(?) '
                 f"AND ((NULLIF({from_value}, '') IS NOT NULL AND ({from_date}) IS NULL) "
                 f"OR (NULLIF({to_value}, '') IS NOT NULL AND ({to_date}) IS NULL)))"
             )
