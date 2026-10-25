@@ -278,6 +278,48 @@ supports semantic projection and sorting plus `limit`/`offset` pagination with
 bound parameters, and a catalog's reference or numeric code is appended as a stable
 tie-breaker when needed.
 
+Both `catalog.query` and `catalog.match_qso` accept optional `near` on POTA, SOTA and
+WWFF catalogs advertising `supports_near: true`. Supply a positive finite `radius_km`
+and either a 4–12 character Maidenhead `grid` or both `latitude` and `longitude` in
+decimal degrees. Mixed/incomplete origins, booleans and numeric strings are rejected.
+Locators are case-insensitive and resolve to the centre of their cell.
+
+With `near`, `distance_km` becomes a selectable, filterable and sortable numeric catalog
+field. Default fields include it and default ordering is nearest first with the usual
+reference tie-breaker; explicit fields/sort override those defaults. Radius selection
+uses unrounded distances and precedes set comparison, summary counts, ordering and
+pagination, including partitioned comparisons. Responses add only `effective_near`
+(resolved latitude, longitude, radius_km and input grid when used). Without `near`,
+existing projections, ordering and response shapes are unchanged.
+Returned distances use two decimal places; filtering and sorting use full precision.
+
+Distances are approximate great-circle distances to directory coordinates, **not** park
+boundaries, entrances, or driving routes. Entries with missing, nonnumeric, nonfinite or
+out-of-range coordinates are excluded; zero coordinates are valid. Catalog locators are
+not substituted for missing coordinates. The server uses the locally stored directory;
+it does not fetch maps or verify access, current activity, or award eligibility.
+
+For example, `catalog.match_qso` can find nearby parks with no logging-station reference
+in the explicitly selected QSO population:
+
+```json
+{
+  "catalog": "pota",
+  "near": {"grid": "JO70AA", "radius_km": 30},
+  "qso_field": "my_pota_ref",
+  "scope": {"station_scope": "all"},
+  "relation": "not_matched",
+  "fields": ["reference", "name", "distance_km"]
+}
+```
+
+This means no corresponding QSO is recorded in the selected log population, **not**
+that an official successful activation is absent. Use `pota_ref` instead for contacted
+parks. Scope, dates and QSO filters define the evidence considered; do not silently
+narrow them for a question about all history. `near` is rejected with `qso_only`, whose
+QSO references may have no catalog coordinates. No active/validity filter is implicit;
+request any required catalog status filters explicitly.
+
 For example, this returns currently dated Czech SOTA summits ordered by points. The
 server returns directory facts; the LLM remains responsible for interpreting any award,
 activity, or contest rules:

@@ -25,6 +25,7 @@ from .catalog import (
 from .database import Database
 from .discovery import discover_database
 from .errors import InvalidQueryError
+from .geography import NearSearch
 from .qso import (
     MAX_AGGREGATE_CALCULATIONS,
     AggregateCalculation,
@@ -410,7 +411,7 @@ def create_server(
             Field(
                 description=(
                     "Semantic catalog sort fields and directions. Omit to use that catalog's "
-                    "deterministic default_order from qlog.get_schema."
+                    "default_order, or distance_km ascending when near is supplied."
                 )
             ),
         ] = None,
@@ -429,17 +430,24 @@ def create_server(
                 description="Zero-based row offset; use page.next_offset for the next page.",
             ),
         ] = 0,
+        near: Annotated[
+            NearSearch | None,
+            Field(description=(
+                "Optional radius search for POTA/SOTA/WWFF; adds distance_km, nearest first. "
+                "Distances are to directory points, not park boundaries or routes."
+            )),
+        ] = None,
     ) -> Annotated[
         dict[str, Any],
         Field(
             description=(
                 "Object with catalog, items, fields, and page. Page contains limit, offset, "
                 "returned, has_more, and next_offset; use next_offset only when has_more is "
-                "true."
+                "true. With near, effective_near records the resolved origin and radius."
             )
         ),
     ]:
-        return await catalogs.query(catalog, filters, fields, sort, limit, offset)
+        return await catalogs.query(catalog, filters, fields, sort, limit, offset, near)
 
     @server.tool(
         name="catalog.match_qso",
@@ -542,7 +550,7 @@ def create_server(
                 description=(
                     "Catalog fields or qso_count/first_qso/last_qso and their directions for "
                     "matched or not_matched. For qso_only only key and qso_count are sortable. "
-                    "Omit for key ascending."
+                    "Omit for key ascending, or distance_km ascending with near."
                 )
             ),
         ] = None,
@@ -561,6 +569,14 @@ def create_server(
                 description="Zero-based detail offset; use page.next_offset for the next page.",
             ),
         ] = 0,
+        near: Annotated[
+            NearSearch | None,
+            Field(description=(
+                "Optional catalog radius search, as in catalog.query; matched/not_matched only. "
+                "No logged operation from a POTA park: my_pota_ref + not_matched; "
+                "this does not establish successful activation."
+            )),
+        ] = None,
     ) -> Annotated[
         dict[str, Any],
         Field(
@@ -574,6 +590,7 @@ def create_server(
                 "QSO occurrence count. With partition_by, summary is replaced by ordered "
                 "summaries containing one complete summary per observed partition, every item "
                 "contains that partition, and pagination remains global across detail items."
+                " With near, effective_near records the resolved origin and radius."
             )
         ),
     ]:
@@ -589,6 +606,7 @@ def create_server(
             sort,
             limit,
             offset,
+            near,
         )
 
     @server.tool(

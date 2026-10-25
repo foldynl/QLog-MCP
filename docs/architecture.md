@@ -22,6 +22,7 @@ server.py (FastMCP tools, public contract, lazy construction)
     +--> catalog.py -------------------> database.py
     |       +--> qso.py (scoped semantic key set for catalog.match_qso)
     |       +--> setops.py
+    |       +--> geography.py (validated origin and point distances)
     |
     +--> runtime.py -------------------> qlog-runtime --> running QLog
     |
@@ -48,6 +49,7 @@ The normal lifecycle is:
 | `server.py` | FastMCP construction, tool names, descriptions, and dependency wiring | Open the database during startup or implement query logic |
 | `qso.py` | QSO scope, semantic field registry, validation, SQL expressions, querying, aggregation, and QSO value sets | Expose physical SQLite names to clients |
 | `catalog.py` | Catalog capability detection, catalog fields, catalog queries, and neutral set comparison | Decide whether a set is an award or contest result |
+| `geography.py` | Radius-search origin validation, grid centres, bounding boxes and approximate point distances | Fetch maps, calculate routes or determine park boundaries |
 | `setops.py` | SQL composition for relations and complete summaries between two validated value sets | Define scopes, fields, catalog rules, or public tools |
 | `filters.py` | Shared nested filter models and operator vocabulary | Interpret domain-specific award rules |
 | `database.py` | Lazy SQLite connections in read-only mode | Migrate, repair, write, or create a QLog database |

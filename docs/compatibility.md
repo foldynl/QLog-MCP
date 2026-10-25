@@ -65,6 +65,13 @@ clubs. A catalog is advertised only when
 its recognizable source is available; missing optional columns remove only the affected
 catalog fields and may change `source_capability` from `full` to `reduced`.
 
+Geographic `near` searches require both semantic `latitude` and `longitude` fields in
+POTA, SOTA or WWFF. Only qualifying catalogs advertise `supports_near: true`; explicit
+use without the required coordinates produces a compatibility error. Other directory
+fields and ordinary catalog queries remain available. `distance_km` is computed per
+request and available only with `near`; no database migration or spatial extension is
+required. Missing/invalid row coordinates are excluded from geographic searches.
+
 `qlog.get_schema(domain="catalog")` also publishes the only legal mappings for
 `catalog.match_qso`:
 

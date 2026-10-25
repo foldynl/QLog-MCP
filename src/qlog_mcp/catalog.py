@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from enum import Enum
 from typing import Any, Literal
@@ -26,6 +26,7 @@ from .filters import (
     compact_date_expression,
     validate_filter_value,
 )
+from .geography import NearSearch, distance_km
 from .qso import LogScope, QsoQuery
 from .setops import SetRelation, compile_set_comparison
 from .usage_log import record_sql
@@ -53,6 +54,7 @@ CATALOG_NAMES: tuple[CatalogName, ...] = (
 MAX_LIMIT = 1000
 MAX_MATCH_PARTITION_FIELDS = 3
 MAX_MATCH_PARTITIONS = 100
+GEOGRAPHIC_CATALOGS = {"pota", "sota", "wwff"}
 
 
 class CatalogSort(BaseModel):
@@ -529,6 +531,8 @@ class CatalogQuery:
                         ),
                     },
                 }
+                if name in GEOGRAPHIC_CATALOGS and {"latitude", "longitude"} <= resolved.fields.keys():
+                    catalogs[name]["supports_near"] = True
 
         used_operators = {
             operator
@@ -536,7 +540,7 @@ class CatalogQuery:
             for field in catalog["fields"].values()
             for operator in field["operators"]
         }
-        return {
+        schema = {
             "catalogs": catalogs,
             "source_capability_semantics": {
                 "full": "All semantic fields defined for the preferred catalog source exist.",
@@ -645,6 +649,22 @@ class CatalogQuery:
                 ),
             },
         }
+        if any(catalog.get("supports_near") for catalog in catalogs.values()):
+            schema["near"] = {
+                "distance_field": "distance_km",
+                "semantics": (
+                    "Optional near on catalog.query/match_qso for supports_near catalogs. "
+                    "Approximate great-circle km from grid centre or coordinates to directory "
+                    "points, not boundaries or routes; missing/invalid coordinates are excluded. "
+                    "distance_km requires near; defaults include it and sort nearest first. "
+                    "Distances display 2 decimals; filtering/ordering use unrounded values. "
+                    "effective_near records the origin. Summaries and pagination use the "
+                    "radius-limited catalog. No logged operation from a POTA park: "
+                    "my_pota_ref + not_matched, not proof of successful/credited activation. "
+                    "near excludes no catalog status implicitly and rejects qso_only."
+                ),
+            }
+        return schema
 
     async def query(
         self,
@@ -654,6 +674,7 @@ class CatalogQuery:
         sort: list[CatalogSort] | None,
         limit: int,
         offset: int,
+        near: NearSearch | None = None,
     ) -> dict[str, Any]:
         self._validate_page(limit, offset)
         if catalog not in CATALOGS:
@@ -665,8 +686,10 @@ class CatalogQuery:
                 raise IncompatibleDatabaseError(
                     f"Catalog {catalog!r} is unavailable in this QLog database schema"
                 )
+            resolved, near_ctes, parameters = await self._near_source(connection, resolved, near)
             selected_names = self._resolve_fields(resolved, fields)
-            parameters: list[Any] = []
+            if near is not None and not sort:
+                sort = [CatalogSort(field="distance_km")]
             where_sql = (
                 self._compile_group(resolved, filters, parameters)
                 if filters is not None
@@ -680,12 +703,14 @@ class CatalogQuery:
                 f'SELECT {select_sql} FROM "{resolved.source.table}" AS d '
                 f"WHERE {where_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?"
             )
+            if near_ctes:
+                sql = f"WITH {', '.join(near_ctes)} {sql}"
             parameters.extend((limit + 1, offset))
             rows = await self._execute_sql(connection, sql, parameters)
 
         has_more = len(rows) > limit
         items = [self._serialize_row(row, selected_names, resolved.fields) for row in rows[:limit]]
-        return {
+        result = {
             "catalog": catalog,
             "items": items,
             "fields": selected_names,
@@ -697,6 +722,9 @@ class CatalogQuery:
                 "next_offset": offset + limit if has_more else None,
             },
         }
+        if near is not None:
+            result["effective_near"] = near.effective()
+        return result
 
     async def match_qso(
         self,
@@ -711,6 +739,7 @@ class CatalogQuery:
         sort: list[CatalogMatchSort] | None,
         limit: int,
         offset: int,
+        near: NearSearch | None = None,
     ) -> dict[str, Any]:
         """Compare catalog keys with distinct values in a scoped QSO population."""
         self._validate_page(limit, offset)
@@ -718,6 +747,11 @@ class CatalogQuery:
             raise InvalidQueryError(f"Unknown catalog: {catalog}")
 
         relation = MatchRelation(relation)
+        if near is not None:
+            if relation == MatchRelation.QSO_ONLY:
+                raise InvalidQueryError("near supports matched or not_matched; not qso_only")
+            if not sort:
+                sort = [CatalogMatchSort(field="distance_km")]
         async with self.database.connect() as connection:
             resolved = await self._find_catalog(connection, catalog)
             if resolved is None:
@@ -761,8 +795,12 @@ class CatalogQuery:
                     sort,
                     limit,
                     offset,
+                    near,
                 )
 
+            resolved, near_ctes, near_parameters = await self._near_source(
+                connection, resolved, near
+            )
             selected_names = self._resolve_match_fields(resolved, relation, fields)
             order_sql, sort_names = self._compile_match_sort(resolved, relation, sort)
             key_name = resolved.definition.key_field
@@ -787,6 +825,7 @@ class CatalogQuery:
                 qso_field,
                 include_time_bounds=include_time_bounds,
             )
+            parameters = near_parameters + parameters
             catalog_parameters: list[Any] = []
             catalog_where = (
                 self._compile_group(resolved, catalog_filters, catalog_parameters)
@@ -810,6 +849,7 @@ class CatalogQuery:
                 f'MIN("{name}") AS "{name}"' for name in catalog_names
             )
             ctes = [
+                *near_ctes,
                 *qso_ctes,
                 (
                     '"_catalog_rows" AS ('
@@ -896,7 +936,7 @@ class CatalogQuery:
             for row in detail_rows[:limit]
         ]
         summary = rows[0]
-        return {
+        result = {
             "relation": relation.value,
             "summary": {
                 "catalog_values": summary["catalog_values"],
@@ -917,6 +957,9 @@ class CatalogQuery:
                 "next_offset": offset + limit if has_more else None,
             },
         }
+        if near is not None:
+            result["effective_near"] = near.effective()
+        return result
 
     async def _match_qso_partitioned(
         self,
@@ -932,8 +975,10 @@ class CatalogQuery:
         sort: list[CatalogMatchSort] | None,
         limit: int,
         offset: int,
+        near: NearSearch | None = None,
     ) -> dict[str, Any]:
         """Compare one catalog with filtered QSO keys inside scoped QSO partitions."""
+        resolved, near_ctes, near_parameters = await self._near_source(connection, resolved, near)
         selected_names = self._resolve_match_fields(resolved, relation, fields)
         order_sql, sort_names = self._compile_match_sort(resolved, relation, sort)
         key_name = resolved.definition.key_field
@@ -962,6 +1007,7 @@ class CatalogQuery:
                 include_time_bounds=include_time_bounds,
             )
         )
+        parameters = near_parameters + parameters
         partition_aliases = [
             f"_partition_{index}" for index in range(len(partition_metadata))
         ]
@@ -999,6 +1045,7 @@ class CatalogQuery:
         )
         set_summary_join = self._partition_join("p", "s", partition_aliases)
         ctes = [
+            *near_ctes,
             *qso_ctes,
             (
                 '"_catalog_rows" AS ('
@@ -1156,7 +1203,7 @@ class CatalogQuery:
                     **item,
                 }
             )
-        return {
+        result = {
             "relation": relation.value,
             "partition_by": partition_by,
             "summaries": summaries,
@@ -1173,6 +1220,53 @@ class CatalogQuery:
                 "next_offset": offset + limit if has_more else None,
             },
         }
+        if near is not None:
+            result["effective_near"] = near.effective()
+        return result
+
+    @staticmethod
+    async def _near_source(
+        connection: aiosqlite.Connection, resolved: ResolvedCatalog, near: NearSearch | None,
+    ) -> tuple[ResolvedCatalog, list[str], list[Any]]:
+        if near is None:
+            return resolved, [], []
+        if resolved.name not in GEOGRAPHIC_CATALOGS:
+            raise InvalidQueryError("near supports POTA, SOTA and WWFF point catalogs only")
+        if not {"latitude", "longitude"} <= resolved.fields.keys():
+            raise IncompatibleDatabaseError(
+                f"near requires latitude and longitude for catalog {resolved.name!r}; "
+                "check qlog.get_schema(domain='catalog')"
+            )
+        await connection.create_function("qlog_distance_km", 4, distance_km, deterministic=True)
+        latitude, longitude = near.centre()
+        south, north, west, east = near.bounds()
+        lat = resolved.fields["latitude"].expression()
+        lon = resolved.fields["longitude"].expression()
+        longitude_logic = "AND" if west <= east else "OR"
+        ctes = [
+            (
+                '"_near_points" AS (SELECT d.*, '
+                f'qlog_distance_km(?, ?, {lat}, {lon}) AS "_qlog.distance_km" '
+                f'FROM "{resolved.source.table}" AS d WHERE {lat} BETWEEN ? AND ? '
+                f'AND ({lon} >= ? {longitude_logic} {lon} <= ?))'
+            ),
+            (
+                '"_near_catalog" AS (SELECT * FROM "_near_points" '
+                'WHERE "_qlog.distance_km" <= ?)'
+            ),
+        ]
+        fields = {
+            **resolved.fields,
+            "distance_km": _field("_qlog.distance_km", "number", "Distance to directory point in km"),
+        }
+        resolved = replace(
+            resolved, fields=fields, source=replace(resolved.source, table="_near_catalog"),
+            definition=replace(
+                resolved.definition,
+                default_fields=(*resolved.definition.default_fields, "distance_km"),
+            ),
+        )
+        return resolved, ctes, [latitude, longitude, south, north, west, east, near.radius_km]
 
     async def match_membership_qso(
         self,
@@ -1576,6 +1670,8 @@ class CatalogQuery:
                     continue
                 if resolved.fields[name].value_type == "boolean" and result[name] is not None:
                     result[name] = bool(result[name])
+                if name == "distance_km":
+                    result[name] = round(result[name], 2)
         return result
 
     async def _find_catalog(
@@ -1748,6 +1844,8 @@ class CatalogQuery:
         field = resolved.fields.get(name)
         if field is not None:
             return field
+        if name == "distance_km":
+            raise InvalidQueryError("distance_km requires near on a supports_near catalog")
         if name in resolved.definition.field_names:
             raise IncompatibleDatabaseError(
                 f"Catalog field {name!r} is unavailable for {resolved.name!r} in this "
@@ -1765,6 +1863,8 @@ class CatalogQuery:
         for name in fields:
             if definitions[name].value_type == "boolean" and result[name] is not None:
                 result[name] = bool(result[name])
+            if name == "distance_km":
+                result[name] = round(result[name], 2)
         return result
 
     @staticmethod
