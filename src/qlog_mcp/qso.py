@@ -193,7 +193,8 @@ class LogScope(BaseModel):
     station_profile_names: list[str] = Field(
         default_factory=list,
         description=(
-            "Required for station_scope='profile'. Use names returned by qlog.get_context."
+            "Required for station_scope='profile'. Every name must exist; use names returned "
+            "by qlog.get_context."
         ),
     )
     date_from: date | None = Field(
@@ -3120,6 +3121,21 @@ class QsoQuery:
             raise IncompatibleDatabaseError(
                 "Station-profile filtering is unavailable; station_profiles is missing: "
                 + ", ".join(sorted(missing))
+            )
+
+        requested_values = ", ".join("(?)" for _ in profile_names)
+        unknown_profiles = await self._execute_sql(
+            connection,
+            f"WITH requested(name) AS (VALUES {requested_values}) "
+            "SELECT name FROM requested WHERE NOT EXISTS ("
+            "SELECT 1 FROM station_profiles AS sp "
+            'WHERE sp."profile_name" COLLATE NOCASE = requested.name) LIMIT 1',
+            profile_names,
+        )
+        if unknown_profiles:
+            raise InvalidQueryError(
+                "Unknown station profile in station_profile_names; use qlog.get_context "
+                "to list available profiles"
             )
 
         placeholders = ", ".join("?" for _ in profile_names)

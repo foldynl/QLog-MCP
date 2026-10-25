@@ -729,6 +729,117 @@ async def test_qso_query_profile_scope_and_pagination(qlog_database) -> None:
 
 
 @pytest.mark.parametrize(
+    "profile_names,empty_log",
+    [
+        pytest.param(["Typo"], False, id="unknown"),
+        pytest.param(["Portable", "Typo"], False, id="mixed"),
+        pytest.param(["Typo"], True, id="empty-log"),
+    ],
+)
+@pytest.mark.parametrize(
+    "tool_name,arguments,scope_argument",
+    [
+        ("qso.query", {}, "scope"),
+        (
+            "qso.aggregate",
+            {"group_by": [], "metrics": [{"function": "count", "as": "qsos"}]},
+            "scope",
+        ),
+        (
+            "qso.compare_sets",
+            {"right": {"scope": {"station_scope": "all"}, "key": "callsign"},
+             "relation": "both"},
+            "left",
+        ),
+        (
+            "qso.compare_sets",
+            {"left": {"scope": {"station_scope": "all"}, "key": "callsign"},
+             "relation": "both"},
+            "right",
+        ),
+        (
+            "catalog.match_qso",
+            {"catalog": "dxcc", "qso_field": "dxcc"},
+            "scope",
+        ),
+        (
+            "catalog.match_qso",
+            {"catalog": "dxcc", "qso_field": "dxcc", "partition_by": ["band"]},
+            "scope",
+        ),
+        ("membership.match_qso", {"club": "OPEN"}, "scope"),
+    ],
+)
+async def test_profile_scope_rejects_unknown_profiles(
+    catalog_match_database: Path,
+    tmp_path: Path,
+    tool_name: str,
+    arguments: dict[str, Any],
+    scope_argument: str,
+    profile_names: list[str],
+    empty_log: bool,
+) -> None:
+    if empty_log:
+        with sqlite3.connect(catalog_match_database) as connection:
+            connection.execute("DELETE FROM contacts")
+    scope = {"station_scope": "profile", "station_profile_names": profile_names}
+    selection = scope if scope_argument == "scope" else {"scope": scope, "key": "callsign"}
+    usage_log = tmp_path / "usage.jsonl"
+    async with Client(create_server(catalog_match_database, usage_log)) as client:
+        result = await client.call_tool(
+            tool_name, {**arguments, scope_argument: selection}, raise_on_error=False
+        )
+
+    assert result.is_error is True
+    assert "Unknown station profile" in result.content[0].text
+    assert "qlog.get_context" in result.content[0].text
+    raw_log = usage_log.read_text()
+    assert all(name not in raw_log for name in profile_names)
+
+
+@pytest.mark.parametrize(
+    "profile_names,expected_ids",
+    [
+        (["portable"], [1, 2, 3]),
+        (["Portable", "PORTABLE"], [1, 2, 3]),
+        (["Home", "Portable"], [1, 2, 3, 4]),
+        (["Empty"], []),
+        (["Řeka"], []),
+    ],
+)
+async def test_profile_scope_preserves_existing_and_empty_profiles(
+    qlog_database: Path, profile_names: list[str], expected_ids: list[int]
+) -> None:
+    with sqlite3.connect(qlog_database) as connection:
+        connection.executemany(
+            "INSERT INTO station_profiles VALUES (?, ?, ?)",
+            [("Empty", "OK0EMPTY", "JN89AA"), ("Řeka", "OK0EMPTY", "JN89AA")],
+        )
+    async with Client(create_server(qlog_database)) as client:
+        result = await client.call_tool(
+            "qso.query",
+            {"scope": {"station_scope": "profile", "station_profile_names": profile_names},
+             "fields": ["id"], "sort": [{"field": "id"}]},
+        )
+
+    assert [item["id"] for item in result.data["items"]] == expected_ids
+
+
+async def test_profile_scope_requires_profile_schema(qlog_database: Path) -> None:
+    with sqlite3.connect(qlog_database) as connection:
+        connection.execute("DROP TABLE station_profiles")
+    async with Client(create_server(qlog_database)) as client:
+        result = await client.call_tool(
+            "qso.query",
+            {"scope": {"station_scope": "profile", "station_profile_names": ["Typo"]}},
+            raise_on_error=False,
+        )
+
+    assert result.is_error is True
+    assert "Station-profile filtering is unavailable" in result.content[0].text
+
+
+@pytest.mark.parametrize(
     ("keep", "expected_ids"),
     [("first", [2, 1]), ("last", [3, 2])],
 )

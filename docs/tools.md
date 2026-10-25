@@ -611,3 +611,7 @@ All `*_upload_status` fields use the [ADIF QSO Upload Status](https://www.adif.o
 status field.
 
 `scope.station_profile_names` follows QLog's own profile matching concept. QLog stores profile names as the primary key; QSO rows do not contain a profile ID.
+Names use SQLite's `NOCASE` comparison. Every requested profile must exist; an unknown
+name rejects the entire operation with an error pointing to `qlog.get_context` for available
+profiles. An existing profile with no matching QSOs remains valid and returns an empty
+result or zero-count aggregates, as appropriate.
