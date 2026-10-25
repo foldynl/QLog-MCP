@@ -457,6 +457,30 @@ Every QSO operation requires `scope.station_scope`. Its value is `callsign`, `pr
 `qlog.get_schema` publishes the supported `operators` separately for every semantic field, and `filter_operator_semantics` describes each operator. Text fields additionally support `contains`, `starts_with`, and `ends_with`; text matching is case-insensitive. `between` includes both boundaries. `is_null` and `is_not_null` check SQL `NULL` specifically. `is_empty` treats `NULL`, an empty
 string, and a string containing only whitespace as empty; `is_not_empty` is its inverse. `limit` is restricted to 1–1000 and the response reports `has_more` plus `next_offset`.
 
+Filter values must match the semantic field type returned by `qlog.get_schema`:
+
+- Numeric fields accept finite JSON numbers, including fractional thresholds for integer
+  fields. Booleans and numeric strings are rejected; integer parameters must fit signed
+  64 bits. No automatic string-to-number conversion is performed.
+- Boolean fields accept JSON `true` and `false`; text fields accept strings. ADIF status
+  and RST fields advertised as strings retain their text values, such as `"Y"` and `"599"`.
+  `extra_fields` comparisons accept raw stored JSON text as a string, including malformed
+  legacy text; they do not query inside JSON objects.
+- Date fields require a real calendar date in `YYYY-MM-DD` form. Datetime fields accept
+  that date as UTC midnight, or `YYYY-MM-DDTHH:MM[:SS[.fraction]]` with `T` or a space.
+  A timestamp may end in `Z` or an offset `±HH:MM` with hours from 00 to 14 and minutes
+  from 00 to 59; no offset means UTC. Relative expressions such as `now`, compact dates,
+  and invalid calendar dates are rejected. QSO datetime filters retain their existing
+  second precision.
+- Every item in `in` and `not_in`, and both bounds of `between`, must match the field's
+  type. Existing non-empty list and two-bound requirements still apply.
+- For `is_null`, `is_not_null`, `is_empty`, and `is_not_empty`, omit `value` or use `null`;
+  any other supplied value is rejected. `eq` and `neq` with `null` retain their SQL NULL
+  matching semantics.
+
+Filter type errors identify the field, operator, and expected value type without echoing
+the supplied value. Correct the request using the field metadata from `qlog.get_schema`.
+
 `one_per_group` can keep the `first` or `last` matching QSO for every combination of its fields. Scope and filters are applied first; selection uses QSO datetime and contact ID as a deterministic tie-breaker. The ordinary `sort`, `limit`, and `offset` are then applied to the selected complete QSO rows. A list-valued field groups by its complete stored string here; per-item explosion belongs to `qso.aggregate`.
 
 Use the semantic `band` field for a whole amateur band such as `20m`, including an approximate frequency reference such as “14 MHz”. A missing band is derived from the stored frequency and QLog's `bands` table, so band operations include band-only, frequency-only, and combined records. `qlog.get_schema` publishes the available band names and MHz ranges.
@@ -546,6 +570,12 @@ For `distinct_count` only, set `explode=true` to count distinct semantic items i
 ```
 
 `having` filters completed aggregate groups by metric or calculation alias. It supports `eq`, `neq`, `gt`, `gte`, `lt`, and `lte`; multiple conditions are combined with `and`. Values are passed to SQLite as bound parameters.
+Thresholds must match the result type: count, distinct count, sum, average, and calculations
+require finite JSON numbers; `min` and `max` use the source field's type. Fractional numeric
+thresholds are valid even for counts. Booleans and numeric strings are rejected for numeric
+results. Date/time thresholds use the filter formats above. Timestamp thresholds compare
+as UTC instants using SQLite's millisecond date/time resolution, so equivalent offsets
+and `T`/space separators give the same result. `having` does not accept null thresholds.
 
 Missing group values (`NULL`, empty strings, or whitespace-only strings) are returned in one `null` group. Text grouping and distinct counting are case-insensitive, matching the existing filter behavior.
 

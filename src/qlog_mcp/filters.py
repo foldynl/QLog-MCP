@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import math
+import re
+from datetime import date, datetime
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from .errors import InvalidQueryError
 
 Scalar = str | int | float | bool
 
@@ -144,10 +149,16 @@ class FilterCondition(BaseModel):
     value: Scalar | list[Scalar] | None = Field(
         default=None,
         description=(
-            "Value required by op: one scalar for ordinary comparisons; one non-empty "
+            "Match the field type from qlog.get_schema: finite JSON numbers for numeric "
+            "fields (never booleans or numeric strings), JSON booleans for boolean fields, "
+            "and strings for text. Dates use YYYY-MM-DD; datetime accepts that UTC date or "
+            "an ISO date/time with T or space, optional seconds/fraction and Z or ±HH:MM "
+            "offset; no offset means UTC. Object fields compare raw stored JSON text. "
+            "Use one scalar for ordinary comparisons; one non-empty "
             "string for has; a non-empty list for in, not_in, has_any, or has_all; exactly "
-            "two values for between; omit for is_null, is_not_null, is_empty, or "
-            "is_not_empty."
+            "two values for between. Every list item must match the field type. "
+            "For is_null, is_not_null, is_empty, or is_not_empty, omit value or use null; "
+            "other values are rejected. eq/neq with null test SQL NULL."
         ),
     )
 
@@ -170,3 +181,57 @@ class FilterGroup(BaseModel):
         description="Nested filter groups for more complex boolean expressions.",
     )
     negate: bool = Field(default=False, description="Negate the result of this filter group")
+
+
+def validate_scalar_value(value: Scalar, value_type: str, context: str) -> None:
+    """Validate a comparison operand without coercing its JSON type or exposing its value."""
+    expected = "a JSON string"
+    valid = isinstance(value, str)
+    if value_type in {"integer", "number"}:
+        expected = (
+            "a finite JSON number, not a boolean or numeric string "
+            "(integer parameters must fit signed 64 bits)"
+        )
+        valid = (
+            type(value) is int and -(2**63) <= value < 2**63
+            or type(value) is float and math.isfinite(value)
+        )
+    elif value_type == "boolean":
+        expected = "a JSON boolean (true or false)"
+        valid = type(value) is bool
+    elif value_type in {"date", "datetime"}:
+        expected = "a real date in YYYY-MM-DD format"
+        pattern = r"[0-9]{4}-[0-9]{2}-[0-9]{2}"
+        if value_type == "datetime":
+            expected = (
+                "a valid ISO date/time (YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS[.fraction]], "
+                "T or space, optional Z or ±HH:MM offset; no offset means UTC)"
+            )
+            pattern += (
+                r"(?:[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]+)?)?"
+                r"(?:Z|[+-](?:0[0-9]|1[0-4]):[0-5][0-9])?)?"
+            )
+        valid = False
+        if isinstance(value, str) and re.fullmatch(pattern, value):
+            try:
+                if value_type == "date":
+                    date.fromisoformat(value)
+                else:
+                    datetime.fromisoformat(value)
+                valid = True
+            except ValueError:
+                pass
+    if not valid:
+        raise InvalidQueryError(f"{context} requires {expected}; see qlog.get_schema")
+
+
+def validate_filter_value(condition: FilterCondition, value_type: str) -> None:
+    """Check semantic operand types; compilers retain operator shape and SQL handling."""
+    value = condition.value
+    context = f"Filter {condition.field!r} with operator {condition.op.value!r}"
+    if condition.op in PRESENCE_OPERATORS:
+        if value is not None:
+            raise InvalidQueryError(f"{context} does not accept a value; omit value or use null")
+    elif value is not None:
+        for item in value if isinstance(value, list) else [value]:
+            validate_scalar_value(item, value_type, context)

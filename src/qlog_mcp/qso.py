@@ -28,6 +28,8 @@ from .filters import (
     Scalar,
     SortDirection,
     compact_date_expression,
+    validate_filter_value,
+    validate_scalar_value,
 )
 from .setops import SET_RELATION_DESCRIPTIONS, SetRelation, compile_set_comparison
 from .usage_log import record_sql
@@ -507,8 +509,11 @@ class AggregateHaving(BaseModel):
     )
     value: Scalar = Field(
         description=(
-            "Scalar threshold compared with the completed metric or calculation. A "
-            "calculation requires a numeric threshold."
+            "Threshold matching the metric result type: finite JSON numbers for counts, "
+            "sums, averages and calculations; min/max use their field's type from "
+            "qlog.get_schema. Booleans and numeric strings are not numeric thresholds. "
+            "Fractional thresholds are valid for integer metrics. Date/time thresholds "
+            "follow FilterCondition formats and compare as dates or UTC instants."
         )
     )
 
@@ -2160,10 +2165,12 @@ class QsoQuery:
                 "default_order": "first metric descending, then group_by fields ascending",
                 "having_operators": [operator.value for operator in HavingOperator],
                 "having_operator_semantics": {
-                    operator.value: FILTER_OPERATOR_DESCRIPTIONS[
-                        FilterOperator(operator.value)
-                    ]
-                    for operator in HavingOperator
+                    "eq": "Equal to one threshold matching the metric or calculation result type.",
+                    "neq": "Not equal to one threshold matching the result type.",
+                    "gt": "Greater than one threshold matching the result type.",
+                    "gte": "Greater than or equal to one threshold matching the result type.",
+                    "lt": "Less than one threshold matching the result type.",
+                    "lte": "Less than or equal to one threshold matching the result type.",
                 },
             },
         }
@@ -2358,6 +2365,11 @@ class QsoQuery:
                 f"{prefix}SELECT {', '.join(select_groups + metric_sql)} FROM {from_sql}"
                 f"{main_where}{group_sql}"
             )
+            having_types = {
+                metric.output_name: self._metric_value_type(metric, columns)
+                for metric in metrics
+            }
+            having_types.update((name, "number") for name in calculation_names)
             if calculation_items:
                 calculated_sql = self._compile_calculations(
                     aggregate_sql,
@@ -2369,17 +2381,16 @@ class QsoQuery:
                 )
                 having_sql = self._compile_having(
                     having,
-                    set(metric_names + calculation_names),
+                    having_types,
                     having_parameters,
                     clause=" WHERE ",
-                    calculation_aliases=set(calculation_names),
                 )
                 completed_sql = (
                     f'SELECT * FROM ({calculated_sql}) AS "_calculated"{having_sql}'
                 )
             else:
                 having_sql = self._compile_having(
-                    having, set(metric_names), having_parameters
+                    having, having_types, having_parameters
                 )
                 completed_sql = f"{aggregate_sql}{having_sql}"
             parameters.extend(having_parameters)
@@ -3241,6 +3252,7 @@ class QsoQuery:
             ]
             return "(" + joiner.join(matches) + ")"
 
+        validate_filter_value(condition, field.value_type)
         if operator == FilterOperator.IS_NULL:
             return f"{expression} IS NULL"
         if operator == FilterOperator.IS_NOT_NULL:
@@ -3397,7 +3409,7 @@ class QsoQuery:
         numeric = {
             metric.output_name
             for metric in metrics
-            if self._metric_is_numeric(metric, columns)
+            if self._metric_value_type(metric, columns) in {"integer", "number"}
         }
         ctes = [f'"_aggregate" AS ({aggregate_sql})']
         source = '"_aggregate"'
@@ -3440,17 +3452,20 @@ class QsoQuery:
             numeric.add(calculation.output_name)
         return f"WITH {', '.join(ctes)} SELECT * FROM {source}"
 
-    def _metric_is_numeric(
+    def _metric_value_type(
         self, metric: AggregateMetric, columns: set[str]
-    ) -> bool:
+    ) -> str:
         if metric.function in {
             AggregateFunction.COUNT,
             AggregateFunction.DISTINCT_COUNT,
+        }:
+            return "integer"
+        if metric.function in {
             AggregateFunction.SUM,
             AggregateFunction.AVG,
         }:
-            return True
-        return self._aggregate_field(metric, columns).value_type in {"integer", "number"}
+            return "number"
+        return self._aggregate_field(metric, columns).value_type
 
     @staticmethod
     def _compile_aggregate_sort(
@@ -3490,16 +3505,14 @@ class QsoQuery:
     @staticmethod
     def _compile_having(
         having: list[AggregateHaving] | None,
-        aliases: set[str],
+        alias_types: dict[str, str],
         parameters: list[Any],
         *,
         clause: str = " HAVING ",
-        calculation_aliases: set[str] | None = None,
     ) -> str:
         if not having:
             return ""
 
-        calculation_aliases = calculation_aliases or set()
         operators = {
             HavingOperator.EQ: "=",
             HavingOperator.NEQ: "<>",
@@ -3510,18 +3523,19 @@ class QsoQuery:
         }
         parts = []
         for condition in having:
-            if condition.field not in aliases:
+            if condition.field not in alias_types:
                 raise InvalidQueryError(
                     f"Unknown aggregate having field: {condition.field}"
                 )
-            if condition.field in calculation_aliases and (
-                isinstance(condition.value, bool)
-                or not isinstance(condition.value, (int, float))
-            ):
-                raise InvalidQueryError(
-                    f"Aggregate calculation having value must be numeric: {condition.field}"
-                )
-            parts.append(f'"{condition.field}" {operators[condition.op]} ?')
+            value_type = alias_types[condition.field]
+            validate_scalar_value(
+                condition.value, value_type, f"Having value for {condition.field!r}"
+            )
+            expression, placeholder = f'"{condition.field}"', "?"
+            if value_type in {"date", "datetime"}:
+                function = "julianday" if value_type == "datetime" else "date"
+                expression, placeholder = f"{function}({expression})", f"{function}(?)"
+            parts.append(f"{expression} {operators[condition.op]} {placeholder}")
             parameters.append(condition.value)
         return clause + " AND ".join(parts)
 

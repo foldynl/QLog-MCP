@@ -708,7 +708,7 @@ async def test_chains_period_rates_and_orders_null_last(qlog_database) -> None:
             [{"function": "count", "as": "total"}],
             [{"op": "divide", "left": "total", "right": "total", "as": "rate"}],
             [{"field": "rate", "value": "one"}],
-            "Aggregate calculation having value must be numeric: rate",
+            "Having value for 'rate' requires a finite JSON number",
         ),
     ],
 )

@@ -24,6 +24,7 @@ from .filters import (
     FilterOperator,
     SortDirection,
     compact_date_expression,
+    validate_filter_value,
 )
 from .qso import LogScope, QsoQuery
 from .setops import SetRelation, compile_set_comparison
@@ -1663,6 +1664,7 @@ class CatalogQuery:
 
         expression = field.comparison_expression()
         value = condition.value
+        validate_filter_value(condition, field.value_type)
         if operator == FilterOperator.IS_NULL:
             return f"{expression} IS NULL"
         if operator == FilterOperator.IS_NOT_NULL:
